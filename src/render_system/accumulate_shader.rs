@@ -63,7 +63,7 @@ void main() {
         for(int bounce = int(num_bounces)-1; bounce >= 0; bounce--) {            
             // tensor layout: [bounce, sample, y, x, channel]
             const uint bid = bounce         * num_samples * ysize * xsize 
-                + gl_GlobalInvocationID.z   * ysize * xsize 
+                + sample_id                 * ysize * xsize 
                 + gl_GlobalInvocationID.y   * xsize 
                 + gl_GlobalInvocationID.x;
             // whether the ray is valid
@@ -76,7 +76,9 @@ void main() {
             // this is our sampling distribution: 
             // mis_weight proportion of the time, we sample from the light source, and 1-mis_weight proportion of the time, we sample from the BSDF
             float qx = nee_pdf * nee_mis_weight + (1.0 - nee_mis_weight) * bsdf_pdf;
-            float reweighting_factor = bsdf_pdf / qx;
+            // this is the distribution we are trying to compute the expectation over
+            float px = bsdf_pdf;
+            float reweighting_factor = px / qx;
 
             sample_color = input_emissivity[bid] + sample_color * input_reflectivity[bid] * reweighting_factor * ray_valid;
         }

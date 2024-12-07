@@ -5,7 +5,11 @@ vulkano_shaders::shader! {
 #version 460
 #extension GL_EXT_scalar_block_layout: require
 
-layout(local_size_x = 32, local_size_y = 32, local_size_z = 1) in;
+layout(
+    local_size_x_id = 1, 
+    local_size_y_id = 2, 
+    local_size_z_id = 3
+) in;
 
 layout(set = 0, binding = 0, scalar) writeonly buffer OutputsOrigin {
     vec3 output_origin[];

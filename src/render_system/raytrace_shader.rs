@@ -12,7 +12,11 @@ vulkano_shaders::shader! {
 #define M_PI 3.1415926535897932384626433832795
 #define EPSILON_BLOCK 0.001
 
-layout(local_size_x = 32, local_size_y = 32, local_size_z = 1) in;
+layout(
+    local_size_x_id = 1, 
+    local_size_y_id = 2, 
+    local_size_z_id = 3
+) in;
 
 layout(set = 0, binding = 0) uniform sampler s;
 layout(set = 0, binding = 1) uniform texture2D tex[];
@@ -67,23 +71,27 @@ layout(set = 1, binding = 5, scalar) writeonly buffer OutputsDirection {
     vec3 output_direction[];
 };
 
-layout(set = 1, binding = 6, scalar) writeonly buffer OutputsEmissivity {
+layout(set = 1, binding = 6, scalar) writeonly buffer OutputsNormal {
+    vec3 output_normal[];
+};
+
+layout(set = 1, binding = 7, scalar) writeonly buffer OutputsEmissivity {
     vec3 output_emissivity[];
 };
 
-layout(set = 1, binding = 7, scalar) writeonly buffer OutputsReflectivity {
+layout(set = 1, binding = 8, scalar) writeonly buffer OutputsReflectivity {
     vec3 output_reflectivity[];
 };
 
-layout(set = 1, binding = 8) writeonly buffer OutputsNeeMisWeight {
+layout(set = 1, binding = 9) writeonly buffer OutputsNeeMisWeight {
     float output_nee_mis_weight[];
 };
 
-layout(set = 1, binding = 9) writeonly buffer OutputsBsdfPdf {
+layout(set = 1, binding = 10) writeonly buffer OutputsBsdfPdf {
     float output_bsdf_pdf[];
 };
 
-layout(set = 1, binding = 10) writeonly buffer OutputsDebugInfo {
+layout(set = 1, binding = 11) writeonly buffer OutputsDebugInfo {
     vec4 output_debug_info[];
 };
 
@@ -276,92 +284,6 @@ float getVisibleTriangleArea(VisibleTriangles vt) {
         return 0.0;
     }
 }
-
-// // https://www.scratchapixel.com/lessons/3d-basic-rendering/ray-tracing-rendering-a-triangle/ray-triangle-intersection-geometric-solution.html
-// bool rayTriangleIntersect(
-//     vec3 orig, vec3 dir,
-//     vec3 v0, vec3 v1, vec3 v2,
-//     out float t
-// )
-// {
-//     const float EPS = 0.0000001;
-//     const float EPS2 = 0.0001;
-
-
-//     // Compute the plane's normal
-//     vec3 v0v1 = v1 - v0;
-//     vec3 v0v2 = v2 - v0;
-//     // No need to normalize
-//     vec3 N = cross(v0v1, v0v2); // N
-//     float area2 = length(N);
-
-//     // Step 1: Finding P
-    
-//     // Check if the ray and plane are parallel
-//     float NdotRayDirection = dot(N, dir);
-//     if (abs(NdotRayDirection) < EPS) // Almost 0
-//         return false; // They are parallel, so they don't intersect!
-
-//     // Compute d parameter using equation 2
-//     float d = -dot(N, v0);
-    
-//     // Compute t (equation 3)
-//     t = -(dot(N, orig) + d) / NdotRayDirection;
-    
-//     // Check if the triangle is behind the ray
-//     if (t < 0) return false; // The triangle is behind
-
-//     // Compute the intersection point using equation 1
-//     vec3 P = orig + t * dir;
-
-//     // Step 2: Inside-Outside Test
-//     vec3 C; // Vector perpendicular to triangle's plane
-
-//     // Edge 0
-//     vec3 edge0 = v1 - v0; 
-//     vec3 vp0 = P - v0;
-//     C = cross(edge0, vp0);
-//     if (dot(N, C) < -EPS2) return false; // P is on the right side
-
-//     // Edge 1
-//     vec3 edge1 = v2 - v1; 
-//     vec3 vp1 = P - v1;
-//     C = cross(edge1, vp1);
-//     if (dot(N, C) < -EPS2) return false; // P is on the right side
-
-//     // Edge 2
-//     vec3 edge2 = v0 - v2; 
-//     vec3 vp2 = P - v2;
-//     C = cross(edge2, vp2);
-//     if (dot(N, C) < -EPS2) return false; // P is on the right side
-
-//     return true; // This ray hits the triangle
-// }
-
-// bool rayVisibleTriangleIntersect(
-//     vec3 orig, vec3 dir,
-//     VisibleTriangles vt,
-//     out float t
-// ) {
-//     if(vt.num_visible == 0) {
-//         return false;
-//     } else {
-//         bool success = rayTriangleIntersect(
-//             orig, dir,
-//             vt.tri0[0], vt.tri0[1], vt.tri0[2],
-//             t
-//         );
-//         if(!success && vt.num_visible == 2) {
-//             return rayTriangleIntersect(
-//                 orig, dir,
-//                 vt.tri1[0], vt.tri1[1], vt.tri1[2],
-//                 t
-//             );
-//         } else {
-//             return success;
-//         }
-//     }
-// }
 
 vec3[3] triangleTransform(mat4x3 transform, vec3[3] tri) {
     return vec3[3](
@@ -768,7 +690,7 @@ void main() {
     if(info.miss) {
         output_origin[bid] = origin;
         output_direction[bid] = vec3(0.0); // no direction (miss)
-        output_emissivity[bid] = vec3(5.0); // sky color
+        output_emissivity[bid] = vec3(20.0); // sky color
         output_reflectivity[bid] = vec3(0.0);
         output_nee_mis_weight[bid] = 0.0;
         output_bsdf_pdf[bid] = 1.0;
@@ -854,10 +776,9 @@ void main() {
             // light_pdf_mis_weight = 0.5;
         }
 
-        // light sampling data that may or may not be valid
-        VisibleTriangles vt; // visible triangles struct
-
-        if(light_pdf_mis_weight > 0.0) {
+        // randomly choose whether or not to sample the light
+        float mis_rand = murmur3_finalizef(murmur3_combine(seed, 3));
+        if(mis_rand < light_pdf_mis_weight) {
             // get the instance data for this instance
             InstanceData id_light = instance_data[result.instance_index];
 
@@ -874,19 +795,18 @@ void main() {
 
             // transform triangle
             vec3[3] tri_light = triangleTransform(id_light.transform, tri_light_r);
-            vt = splitIntoVisibleTriangles(new_origin, ics.normal, tri_light);
-        }
-
-        // randomly choose whether or not to sample the light
-        float mis_rand = murmur3_finalizef(murmur3_combine(seed, 3));
-        if(mis_rand < light_pdf_mis_weight) {
+                        
             // sample a point on the light
             vec3 tuv_light = vec3(
                 murmur3_finalizef(murmur3_combine(seed, 4)),
                 murmur3_finalizef(murmur3_combine(seed, 5)),
                 murmur3_finalizef(murmur3_combine(seed, 6))
             );
-            vec3 sampled_light_point = visibleTriangleSample(tuv_light, vt);
+
+            vec3 sampled_light_point = visibleTriangleSample(
+                tuv_light, 
+                splitIntoVisibleTriangles(new_origin, ics.normal, tri_light)
+            );
 
             new_direction = normalize(sampled_light_point - new_origin);
         } else {
@@ -907,24 +827,12 @@ void main() {
 
         // what is the probability of picking this ray if we treated the surface as lambertian and randomly sampled from the BRDF?
         bsdf_pdf = cos_theta / M_PI;
-
-        // // compute the ray pdf for the light
-        // float ray_pdf_light = 0.0;
-        // if(light_pdf_mis_weight > 0.0) {
-        //     float t;
-        //     if(rayVisibleTriangleIntersect(new_origin, new_direction, vt, t)) {
-        //         vec3 sampled_light_point = new_origin + t*new_direction;
-        //         float light_area = getVisibleTriangleArea(vt);
-        //         float light_distance = length(sampled_light_point - new_origin);
-        //         // what is the probability of picking this ray if we were picking a random point on the light?
-        //         ray_pdf_light = light_distance*light_distance/(cos_theta*light_area);
-        //     }
-        // }
     }
 
     // compute data for this bounce
     output_origin[bid] = new_origin;
     output_direction[bid] = new_direction;
+    output_normal[bid] = ics.normal;
     output_emissivity[bid] = emissivity;
     output_reflectivity[bid] = reflectivity;
     output_nee_mis_weight[bid] = light_pdf_mis_weight;

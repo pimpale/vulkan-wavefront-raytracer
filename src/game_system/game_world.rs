@@ -133,6 +133,7 @@ impl GameWorld {
             memory_allocator.clone(),
             descriptor_set_allocator.clone(),
             texture_atlas,
+            1,
         );
 
 
