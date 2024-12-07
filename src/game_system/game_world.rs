@@ -136,7 +136,6 @@ impl GameWorld {
             1,
         );
 
-
         let scene = Scene::new(
             general_queue.clone(),
             transfer_queue.clone(),
@@ -155,8 +154,13 @@ impl GameWorld {
 
         let camera = Rc::new(RefCell::new(camera));
 
-        let (chunk_manager, chunk_querier) =
-            ChunkManager::new(threadpool, scene_uploader.clone(), memory_allocator.clone(), 0, block_table.clone());
+        let (chunk_manager, chunk_querier) = ChunkManager::new(
+            threadpool,
+            scene_uploader.clone(),
+            memory_allocator.clone(),
+            0,
+            block_table.clone(),
+        );
 
         let physics_manager = PhysicsManager::new();
 
@@ -266,14 +270,22 @@ impl GameWorld {
             let camera = self.camera.borrow();
             (camera.eye_front_right_up(), camera.rendering_preferences())
         };
-        let (top_level_acceleration_structure, instance_data, luminance_bvh, build_future) =
-            self.scene.borrow_mut().get_tlas();
+        let (
+            top_level_acceleration_structure,
+            light_top_level_acceleration_structure,
+            instance_data,
+            light_instance_data,
+            luminance_bvh,
+            build_future,
+        ) = self.scene.borrow_mut().get_tlas();
 
         // render to screen
         self.renderer.render(
             build_future,
             top_level_acceleration_structure,
+            light_top_level_acceleration_structure,
             instance_data,
+            light_instance_data,
             luminance_bvh,
             eye,
             front,

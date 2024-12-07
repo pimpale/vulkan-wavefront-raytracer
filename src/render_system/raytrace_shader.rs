@@ -40,6 +40,7 @@ layout(buffer_reference, buffer_reference_align=4, scalar) readonly buffer BvhNo
     float up_luminance_or_prim_luminance;
     float back_luminance;
     float front_luminance;
+    uint parent_node_idx;
 };
 
 struct InstanceData {
@@ -304,26 +305,6 @@ float triangleRadiusSquared(vec3 center, vec3[3] tri) {
             lengthSquared(tri[1] - center)
         ),
         lengthSquared(tri[2] - center)
-    );
-}
-
-struct IntersectionCoordinateSystem {
-    vec3 normal;
-    vec3 tangent;
-    vec3 bitangent;
-};
-
-IntersectionCoordinateSystem localCoordinateSystem(vec3[3] tri) {
-    vec3 v0_1 = tri[1] - tri[0];
-    vec3 v0_2 = tri[2] - tri[0];
-    vec3 normal = cross(v0_1, v0_2);
-    vec3 tangent = v0_1;
-    vec3 bitangent = cross(normal, tangent);
-    
-    return IntersectionCoordinateSystem(
-        normalize(normal),
-        normalize(tangent),
-        normalize(bitangent)
     );
 }
 
@@ -606,6 +587,26 @@ vec3 visibleTriangleSample(vec3 tuv, VisibleTriangles vt) {
     }
 }
 
+struct IntersectionCoordinateSystem {
+    vec3 normal;
+    vec3 tangent;
+    vec3 bitangent;
+};
+
+IntersectionCoordinateSystem localCoordinateSystem(vec3[3] tri) {
+    vec3 v0_1 = tri[1] - tri[0];
+    vec3 v0_2 = tri[2] - tri[0];
+    vec3 normal = cross(v0_1, v0_2);
+    vec3 tangent = v0_1;
+    vec3 bitangent = cross(normal, tangent);
+    
+    return IntersectionCoordinateSystem(
+        normalize(normal),
+        normalize(tangent),
+        normalize(bitangent)
+    );
+}
+
 // returns a vector sampled from the hemisphere defined around the coordinate system defined by normal, tangent, and bitangent
 // normal, tangent and bitangent form a right handed coordinate system 
 vec3 alignedCosineWeightedSampleHemisphere(vec2 uv, IntersectionCoordinateSystem ics) {
@@ -627,7 +628,7 @@ IntersectionInfo getIntersectionInfo(vec3 origin, vec3 direction) {
     rayQueryInitializeEXT(
         ray_query,
         top_level_acceleration_structure,
-        gl_RayFlagsCullBackFacingTrianglesEXT,
+        gl_RayFlagsNoneEXT,
         0xFF,
         origin,
         t_min,

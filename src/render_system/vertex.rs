@@ -29,6 +29,25 @@ impl Vertex3D {
     }
 }
 
+#[derive(Clone, Copy, Debug, BufferContents, Vertex, Default)]
+#[repr(C)]
+pub struct LightVertex3D {
+    #[format(R32G32B32_SFLOAT)]
+    pub position: [f32; 3],
+    #[format(R32_UINT)]
+    pub bvh_node_idx: u32,
+}
+
+impl LightVertex3D {
+    pub fn new(position: [f32; 3], idx: u32) -> LightVertex3D {
+        LightVertex3D {
+            position,
+            bvh_node_idx: idx,
+        }
+    }
+}
+
+
 #[derive(Clone, Copy, Debug, BufferContents)]
 #[repr(C)]
 pub struct InstanceData {

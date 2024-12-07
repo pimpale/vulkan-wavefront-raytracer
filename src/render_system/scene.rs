@@ -32,14 +32,14 @@ use crate::render_system::bvh::{self, aabb::Aabb};
 
 use super::{
     bvh::BvhNode,
-    vertex::{InstanceData, Vertex3D},
+    vertex::{InstanceData, LightVertex3D, Vertex3D},
 };
 
 struct Object {
     isometry: Isometry3<f32>,
     vertex_buffer: Subbuffer<[Vertex3D]>,
     blas: Arc<AccelerationStructure>,
-    light_vertex_buffer: Option<Subbuffer<[Vertex3D]>>,
+    light_vertex_buffer: Option<Subbuffer<[LightVertex3D]>>,
     light_blas: Option<Arc<AccelerationStructure>>,
     luminance: [f32; 6],
     light_aabb: Aabb,
@@ -76,6 +76,7 @@ pub struct Scene<K> {
     cached_tlas: Option<Arc<AccelerationStructure>>,
     cached_light_tlas: Option<Arc<AccelerationStructure>>,
     cached_instance_data: Option<Subbuffer<[InstanceData]>>,
+    cached_light_instance_data: Option<Subbuffer<[InstanceData]>>,
     cached_luminance_bvh: Option<Subbuffer<[BvhNode]>>,
     // last frame state
     cached_tlas_state: TopLevelAccelerationStructureState,
@@ -119,6 +120,7 @@ where
             cached_tlas: None,
             cached_light_tlas: None,
             cached_instance_data: None,
+            cached_light_instance_data: None,
             cached_luminance_bvh: None,
             cached_tlas_state: TopLevelAccelerationStructureState::NeedsRebuild,
             blas_command_buffer: command_buffer,
@@ -210,6 +212,8 @@ where
         &mut self,
     ) -> (
         Arc<AccelerationStructure>,
+        Arc<AccelerationStructure>,
+        Subbuffer<[InstanceData]>,
         Subbuffer<[InstanceData]>,
         Subbuffer<[BvhNode]>,
         Box<dyn GpuFuture>,
@@ -256,6 +260,46 @@ where
             .unwrap();
 
             self.cached_instance_data = Some(instance_data);
+
+            let light_instance_data = Buffer::from_iter(
+                self.memory_allocator.clone(),
+                BufferCreateInfo {
+                    usage: BufferUsage::STORAGE_BUFFER,
+                    ..Default::default()
+                },
+                AllocationCreateInfo {
+                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                    ..Default::default()
+                },
+                self.objects
+                    .values()
+                    .flatten()
+                    .filter_map(|obj| match obj {
+                        Object {
+                            isometry,
+                            light_vertex_buffer: Some(light_vertex_buffer),
+                            light_bl_bvh_buffer: Some(light_bl_bvh_buffer),
+                            ..
+                        } => Some(InstanceData {
+                            transform: {
+                                let mat4: Matrix4<f32> = isometry.clone().into();
+                                let mat3x4: Matrix3x4<f32> = mat4.fixed_view::<3, 4>(0, 0).into();
+                                mat3x4.into()
+                            },
+                            bvh_node_buffer_addr: light_bl_bvh_buffer
+                                .device_address()
+                                .unwrap()
+                                .get(),
+                            vertex_buffer_addr: light_vertex_buffer.device_address().unwrap().get(),
+                        }),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap();
+
+            self.cached_light_instance_data = Some(light_instance_data);
 
             let ((isometries, aabbs), (luminances, instance_ids)): (
                 (Vec<_>, Vec<_>),
@@ -351,7 +395,29 @@ where
                         .collect::<Vec<_>>(),
                 );
 
-                // let light_tlas = 
+                let light_tlas = create_top_level_acceleration_structure(
+                    &mut tlas_command_buffer,
+                    self.memory_allocator.clone(),
+                    &self
+                        .objects
+                        .values()
+                        .flatten()
+                        .filter_map(
+                            |Object {
+                                 light_blas,
+                                 isometry,
+                                 ..
+                             }| {
+                                match light_blas {
+                                    Some(light_blas) => {
+                                        Some((light_blas as &AccelerationStructure, isometry))
+                                    }
+                                    None => None,
+                                }
+                            },
+                        )
+                        .collect::<Vec<_>>(),
+                );
 
                 // actually submit acceleration structure build future
                 let tlas_build_future = tlas_command_buffer
@@ -362,6 +428,7 @@ where
 
                 // update state
                 self.cached_tlas = Some(tlas);
+                self.cached_light_tlas = Some(light_tlas);
 
                 // return the future
                 tlas_build_future.boxed()
@@ -381,7 +448,9 @@ where
         // return the tlas
         return (
             self.cached_tlas.clone().unwrap(),
+            self.cached_light_tlas.clone().unwrap(),
             self.cached_instance_data.clone().unwrap(),
+            self.cached_light_instance_data.clone().unwrap(),
             self.cached_luminance_bvh.clone().unwrap(),
             future,
         );
@@ -397,12 +466,32 @@ where
     }
 }
 
+fn light_bl_bvh_buffer_to_light_vertexes(light_bl_bvh_buffer: &[BvhNode]) -> Vec<LightVertex3D> {
+    let mut light_vertexes = Vec::new();
+    for (i, bvh_node) in light_bl_bvh_buffer.iter().enumerate() {
+        let i = i as u32;
+        if bvh_node.left_node_idx == u32::MAX {
+            light_vertexes.push(LightVertex3D::new(bvh_node.min_or_v0, i));
+            light_vertexes.push(LightVertex3D::new(bvh_node.max_or_v1, i));
+            light_vertexes.push(LightVertex3D::new(
+                [
+                    bvh_node.left_luminance_or_v2_1,
+                    bvh_node.right_luminance_or_v2_2,
+                    bvh_node.down_luminance_or_v2_3,
+                ],
+                i,
+            ));
+        }
+    }
+    light_vertexes
+}
+
 #[derive(Clone)]
 pub enum SceneUploadedObjectHandle {
     Empty,
     Uploaded {
         vertex_buffer: Subbuffer<[Vertex3D]>,
-        light_vertex_buffer: Option<Subbuffer<[Vertex3D]>>,
+        light_vertex_buffer: Option<Subbuffer<[LightVertex3D]>>,
         light_bl_bvh_buffer: Option<Subbuffer<[BvhNode]>>,
         light_aabb: Aabb,
         luminance: [f32; 6],
@@ -430,12 +519,10 @@ impl SceneUploader {
         let mut prim_luminance_per_area = vec![];
         let mut prim_index_ids = vec![];
         let mut prim_vertexes = vec![];
-        let mut light_vertexes = vec![];
 
         for i in 0..(vertexes.len() / 3) {
             let luminance = self.texture_luminances[vertexes[i * 3 + 0].t as usize];
             if luminance > 0.0 {
-                light_vertexes.extend_from_slice(vertexes[i * 3..(i + 1) * 3].as_ref());
                 let a = Point3::from(vertexes[i * 3 + 0].position);
                 let b = Point3::from(vertexes[i * 3 + 1].position);
                 let c = Point3::from(vertexes[i * 3 + 2].position);
@@ -490,8 +577,16 @@ impl SceneUploader {
             ))
             .unwrap();
 
-        let (light_bl_bvh_buffer, luminance, light_aabb) = if prim_index_ids.len() > 0 {
-            let light_vertex_dst_buffer: Subbuffer<[Vertex3D]> = Buffer::new_slice(
+        let (light_bl_bvh_buffer, light_vertex_buffer, luminance, light_aabb) = if prim_index_ids
+            .len()
+            > 0
+        {
+            let (light_bl_bvh, light_aabb, luminance) =
+                bvh::build::build_bl_bvh(&prim_luminance_per_area, &prim_vertexes, &prim_index_ids);
+
+            let light_vertexes = light_bl_bvh_buffer_to_light_vertexes(&light_bl_bvh);
+
+            let light_vertex_dst_buffer: Subbuffer<[LightVertex3D]> = Buffer::new_slice(
                 self.memory_allocator.clone(),
                 BufferCreateInfo {
                     usage: BufferUsage::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY
@@ -503,7 +598,7 @@ impl SceneUploader {
                     memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
                     ..Default::default()
                 },
-                light_vertexes.len() as u64,
+                prim_vertexes.len() as u64,
             )
             .unwrap();
 
@@ -527,9 +622,6 @@ impl SceneUploader {
                     light_vertex_dst_buffer.clone(),
                 ))
                 .unwrap();
-
-            let (light_bl_bvh, light_aabb, luminance) =
-                bvh::build::build_bl_bvh(&prim_luminance_per_area, &prim_vertexes, &prim_index_ids);
 
             let light_bl_bvh_dst_buffer: Subbuffer<[BvhNode]> = Buffer::new_slice(
                 self.memory_allocator.clone(),
@@ -568,9 +660,14 @@ impl SceneUploader {
                 ))
                 .unwrap();
 
-            (Some(light_bl_bvh_dst_buffer), luminance, light_aabb)
+            (
+                Some(light_bl_bvh_dst_buffer),
+                Some(light_vertex_dst_buffer),
+                luminance,
+                light_aabb,
+            )
         } else {
-            (None, [0.0; 6], Aabb::Empty)
+            (None, None, [0.0; 6], Aabb::Empty)
         };
 
         transfer_command_buffer
@@ -584,7 +681,7 @@ impl SceneUploader {
 
         SceneUploadedObjectHandle::Uploaded {
             vertex_buffer: vertex_dst_buffer,
-            light_vertex_buffer: None,
+            light_vertex_buffer: light_vertex_buffer,
             light_bl_bvh_buffer: light_bl_bvh_buffer,
             luminance,
             light_aabb,

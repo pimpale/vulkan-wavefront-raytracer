@@ -657,6 +657,8 @@ impl Renderer {
         &mut self,
         build_future: Box<dyn GpuFuture>,
         top_level_acceleration_structure: Arc<AccelerationStructure>,
+        light_top_level_acceleration_structure: Arc<AccelerationStructure>,
+        light_instance_data: Subbuffer<[InstanceData]>,
         instance_data: Subbuffer<[InstanceData]>,
         luminance_bvh: Subbuffer<[BvhNode]>,
         eye: Point3<f32>,
@@ -907,11 +909,11 @@ impl Renderer {
                 .push_descriptor_set(
                     PipelineBindPoint::Compute,
                     self.raytrace_pipeline.layout().clone(),
-                    1,
+                    0,
                     vec![
                         WriteDescriptorSet::acceleration_structure(
                             0,
-                            top_level_acceleration_structure.clone(),
+                            light_top_level_acceleration_structure.clone(),
                         ),
                         WriteDescriptorSet::buffer(1, instance_data.clone()),
                         // input intersection normal

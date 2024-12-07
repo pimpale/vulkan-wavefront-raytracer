@@ -27,6 +27,7 @@ pub struct BvhNode {
     // unused if BL leaf
     pub back_luminance: f32,
     pub front_luminance: f32,
+    pub parent_idx: u32,
 }
 
 impl Default for BvhNode {
@@ -42,6 +43,7 @@ impl Default for BvhNode {
             up_luminance_or_prim_luminance: 0.0,
             back_luminance: 0.0,
             front_luminance: 0.0,
+            parent_idx: 0xFFFFFFFF,
         }
     }
 }
