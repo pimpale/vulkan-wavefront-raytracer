@@ -76,7 +76,6 @@ pub struct Scene<K> {
     cached_tlas: Option<Arc<AccelerationStructure>>,
     cached_light_tlas: Option<Arc<AccelerationStructure>>,
     cached_instance_data: Option<Subbuffer<[InstanceData]>>,
-    cached_light_instance_data: Option<Subbuffer<[InstanceData]>>,
     cached_luminance_bvh: Option<Subbuffer<[BvhNode]>>,
     // last frame state
     cached_tlas_state: TopLevelAccelerationStructureState,
@@ -120,7 +119,6 @@ where
             cached_tlas: None,
             cached_light_tlas: None,
             cached_instance_data: None,
-            cached_light_instance_data: None,
             cached_luminance_bvh: None,
             cached_tlas_state: TopLevelAccelerationStructureState::NeedsRebuild,
             blas_command_buffer: command_buffer,
@@ -261,46 +259,6 @@ where
 
             self.cached_instance_data = Some(instance_data);
 
-            let light_instance_data = Buffer::from_iter(
-                self.memory_allocator.clone(),
-                BufferCreateInfo {
-                    usage: BufferUsage::STORAGE_BUFFER,
-                    ..Default::default()
-                },
-                AllocationCreateInfo {
-                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                    ..Default::default()
-                },
-                self.objects
-                    .values()
-                    .flatten()
-                    .filter_map(|obj| match obj {
-                        Object {
-                            isometry,
-                            light_vertex_buffer: Some(light_vertex_buffer),
-                            light_bl_bvh_buffer: Some(light_bl_bvh_buffer),
-                            ..
-                        } => Some(InstanceData {
-                            transform: {
-                                let mat4: Matrix4<f32> = isometry.clone().into();
-                                let mat3x4: Matrix3x4<f32> = mat4.fixed_view::<3, 4>(0, 0).into();
-                                mat3x4.into()
-                            },
-                            bvh_node_buffer_addr: light_bl_bvh_buffer
-                                .device_address()
-                                .unwrap()
-                                .get(),
-                            vertex_buffer_addr: light_vertex_buffer.device_address().unwrap().get(),
-                        }),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>(),
-            )
-            .unwrap();
-
-            self.cached_light_instance_data = Some(light_instance_data);
-
             let ((isometries, aabbs), (luminances, instance_ids)): (
                 (Vec<_>, Vec<_>),
                 (Vec<_>, Vec<_>),
@@ -390,7 +348,7 @@ where
                         .values()
                         .flatten()
                         .map(|Object { blas, isometry, .. }| {
-                            (blas as &AccelerationStructure, isometry)
+                            (Some(blas as &AccelerationStructure), isometry)
                         })
                         .collect::<Vec<_>>(),
                 );
@@ -402,18 +360,21 @@ where
                         .objects
                         .values()
                         .flatten()
-                        .filter_map(
+                        .map(
                             |Object {
                                  light_blas,
                                  isometry,
                                  ..
                              }| {
-                                match light_blas {
-                                    Some(light_blas) => {
-                                        Some((light_blas as &AccelerationStructure, isometry))
-                                    }
-                                    None => None,
-                                }
+                                (
+                                    match light_blas {
+                                        Some(light_blas) => {
+                                            Some(light_blas as &AccelerationStructure)
+                                        }
+                                        None => None,
+                                    },
+                                    isometry,
+                                )
                             },
                         )
                         .collect::<Vec<_>>(),
@@ -450,7 +411,6 @@ where
             self.cached_tlas.clone().unwrap(),
             self.cached_light_tlas.clone().unwrap(),
             self.cached_instance_data.clone().unwrap(),
-            self.cached_light_instance_data.clone().unwrap(),
             self.cached_luminance_bvh.clone().unwrap(),
             future,
         );
@@ -692,23 +652,22 @@ impl SceneUploader {
 fn create_top_level_acceleration_structure(
     builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
     memory_allocator: Arc<dyn MemoryAllocator>,
-    bottom_level_acceleration_structures: &[(&AccelerationStructure, &Isometry3<f32>)],
+    bottom_level_acceleration_structures: &[(Option<&AccelerationStructure>, &Isometry3<f32>)],
 ) -> Arc<AccelerationStructure> {
     let instances = bottom_level_acceleration_structures
         .iter()
-        .map(
-            |(bottom_level_acceleration_structure, &isometry)| AccelerationStructureInstance {
-                instance_shader_binding_table_record_offset_and_flags: Packed24_8::new(0, 0),
-                acceleration_structure_reference: bottom_level_acceleration_structure
-                    .device_address()
-                    .get(),
-                transform: {
-                    let isometry_matrix: [[f32; 4]; 4] = Matrix4::from(isometry).transpose().into();
-                    [isometry_matrix[0], isometry_matrix[1], isometry_matrix[2]]
-                },
-                ..Default::default()
+        .map(|(blas, &isometry)| AccelerationStructureInstance {
+            instance_shader_binding_table_record_offset_and_flags: Packed24_8::new(0, 0),
+            acceleration_structure_reference: match blas {
+                Some(blas) => blas.device_address().get(),
+                None => 0,
             },
-        )
+            transform: {
+                let isometry_matrix: [[f32; 4]; 4] = Matrix4::from(isometry).transpose().into();
+                [isometry_matrix[0], isometry_matrix[1], isometry_matrix[2]]
+            },
+            ..Default::default()
+        })
         .collect::<Vec<_>>();
 
     let values = Buffer::from_iter(

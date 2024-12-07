@@ -403,12 +403,11 @@ float nodeImportance(bool topLevel, vec3 point, vec3 normal, mat4x3 transform, B
 //     }
 
 //     float probability = 1.0;
-//     float importance = 0.0;
 //     mat4x3 transform = mat4x3(1.0);
 //     uint instance_index = 0xFFFFFFFF;
-//     bool topLevel = true;
+//     bool bottomLevel = true;
 //     while(true) {
-//         if(topLevel && node.left_node_idx == 0xFFFFFFFF) {
+//         if(bottomLevel && node.left_node_idx == 0xFFFFFFFF) {
 //             instance_index = node.right_node_idx_or_prim_idx;
 //             InstanceData id = instance_data[node.right_node_idx_or_prim_idx];
 //             transform = id.transform;
@@ -460,14 +459,48 @@ float nodeImportance(bool topLevel, vec3 point, vec3 normal, mat4x3 transform, B
 //     }
 // }
 
+float reverseTraverseBvh(
+    // the point from which we're evaluating the importance
+    vec3 shading_point,
+    vec3 shading_normal,
+    // regular instance id
+    uint instance_id,
+    // index of the bvh node in the instance
+    uint bvh_node_idx
+) {
+    // root starts off as the bottom level bvh root,
+    // once we reach the ascend through the entire instance, we will replace root with the top level bvh root
+    BvhNode root = BvhNode(instance_data[instance_id].bvh_node_buffer_addr);
+
+    // start off with 1 probability
+    float probability = 1.0;
+    mat4x3 transform = instance_data[instance_id].transform;
+    bool bottomLevel = true;
+
+    // loop works like this:
+    // ascend 1 level up
+    // compute left and right importance
+    // multiply probability
+
+    // ascend 1 level up before we start the loop
+    BvhNode node = root[bvh_node_idx];
+    node = root[node.parent_node_idx];
+
+    while(true) {
+        // if(bottomLevel) 
+    }
+    
+    return 0.0;
+}
+
 float computeNeePdf(
     vec3 shading_point,
     vec3 shading_normal,
-    uint instance_id,
-    uint primitive_id,
+    uint light_instance_id,
+    uint light_primitive_id,
     vec2 barycentric_coords
 ) {
-    // 
+    
 
     // // compute the ray pdf for the light
     // float ray_pdf_light = 0.0;
