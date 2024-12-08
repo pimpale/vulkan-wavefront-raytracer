@@ -95,21 +95,25 @@ impl Manager for EgoControlsManager {
         camera.set_root_position(ego.isometry.translation.vector.clone().cast().into());
         camera.set_root_rotation(ego.isometry.rotation.clone().cast().into());
         camera.handle_event(extent, window_events);
-        if UserInputState::key_pressed(window_events, winit::event::VirtualKeyCode::R) {
-            let current_prefs = camera.rendering_preferences();
-            let new_samples = match current_prefs.samples {
-                1 => 2,
-                2 => 4,
-                4 => 8,
-                8 => 16,
-                16 => 32,
-                32 => 64,
-                _ => 1,
+        if UserInputState::key_pressed(window_events, winit::event::VirtualKeyCode::N) {
+            let mut current_prefs = camera.rendering_preferences();
+            current_prefs.nee_type = match current_prefs.nee_type {
+                0 => 1,
+                _ => 0,
             };
-            camera.set_rendering_preferences(RenderingPreferences {
-                samples: new_samples,
-            });
+            dbg!(current_prefs.nee_type);
+            camera.set_rendering_preferences(current_prefs);
         }
+        if UserInputState::key_pressed(window_events, winit::event::VirtualKeyCode::B) {
+            let mut current_prefs = camera.rendering_preferences();
+            current_prefs.debug_view = match current_prefs.debug_view {
+                0 => 1,
+                _ => 0,
+            };
+            dbg!(current_prefs.debug_view);
+            camera.set_rendering_preferences(current_prefs);
+        }
+
 
         let (cam_eye, cam_front, cam_right, cam_up) = camera.eye_front_right_up();
 

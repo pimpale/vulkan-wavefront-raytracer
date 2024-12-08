@@ -1,6 +1,8 @@
 vulkano_shaders::shader! {
     ty: "compute",
     linalg_type: "nalgebra",
+    vulkan_version: "1.2",
+    spirv_version: "1.3",
     src: r"
 #version 460
 #extension GL_EXT_ray_query: require
@@ -74,16 +76,20 @@ layout(set = 0, binding = 4, scalar) readonly buffer InputsIntersectionOutDirect
     vec3 intersection_out_direction[];
 };
 
-layout(set = 0, binding = 5) writeonly buffer OutputsNeePdf {
+layout(set = 0, binding = 5) readonly buffer InputsNeeMisWeight {
+    float input_nee_mis_weight[];
+};
+
+layout(set = 0, binding = 6) writeonly buffer OutputsNeePdf {
     float output_nee_pdf[];
 };
 
-layout(set = 0, binding = 6) writeonly buffer OutputsDebugInfo {
+layout(set = 0, binding = 7) writeonly buffer OutputsDebugInfo {
     vec4 output_debug_info[];
 };
 
 layout(push_constant, scalar) uniform PushConstants {
-    uint custom;
+    uint nee_type;
     uint bounce_seed;
     uint xsize;
     uint ysize;
@@ -519,14 +525,20 @@ void main() {
     if(gl_GlobalInvocationID.x >= xsize || gl_GlobalInvocationID.y >= ysize) {
         return;
     }
-    
     // tensor layout: [bounce, y, x, channel]
     const uint bid =  
             + gl_GlobalInvocationID.y   * xsize 
             + gl_GlobalInvocationID.x; 
             
-    const vec3 origin = input_intersection_position[bid];
     const vec3 direction = intersection_out_direction[bid];
+
+    // return early if the ray is not valid (already terminated) or the mis weight is zero
+    if(length(direction) == 0.0 || input_nee_mis_weight[bid] == 0.0) {
+        output_nee_pdf[bid] = 0.0;
+        return;
+    }
+    
+    const vec3 origin = input_intersection_position[bid];
     const vec3 normal = intersection_normal[bid];
 
     // trace ray

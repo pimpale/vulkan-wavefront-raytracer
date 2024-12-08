@@ -98,6 +98,7 @@ layout(set = 1, binding = 11) writeonly buffer OutputsDebugInfo {
 
 
 layout(push_constant, scalar) uniform PushConstants {
+    uint nee_type;
     uint bounce_seed;
     uint xsize;
     uint ysize;
@@ -690,7 +691,7 @@ void main() {
     if(info.miss) {
         output_origin[bid] = origin;
         output_direction[bid] = vec3(0.0); // no direction (miss)
-        output_emissivity[bid] = vec3(20.0); // sky color
+        output_emissivity[bid] = vec3(5.0); // sky color
         output_reflectivity[bid] = vec3(0.0);
         output_nee_mis_weight[bid] = 0.0;
         output_bsdf_pdf[bid] = 1.0;
@@ -766,8 +767,12 @@ void main() {
         reflectivity = reflectivity / M_PI;
 
         // try traversing the bvh
-        BvhTraverseResult result = traverseBvh(new_origin, ics.normal, murmur3_combine(seed, 2));
-
+        BvhTraverseResult result;
+        
+        if(nee_type == 1) {
+            result = traverseBvh(new_origin, ics.normal, murmur3_combine(seed, 2));
+        }
+        
         // we have a 0% chance of picking the light if our bvh traversal was unsuccessful
         // otherwise, the chance is proportional to the importance of our pick
         if(result.success && result.importance > 0.0) {

@@ -1,6 +1,8 @@
 vulkano_shaders::shader! {
     ty: "compute",
     linalg_type: "nalgebra",
+    vulkan_version: "1.2",
+    spirv_version: "1.3",
     src: r"
 #version 460
 #extension GL_EXT_scalar_block_layout: require
@@ -45,6 +47,7 @@ layout(set = 0, binding = 8) writeonly buffer OutputsImage {
 };
 
 layout(push_constant, scalar) uniform PushConstants {
+    uint debug_view;
     uint frame;
     uint num_bounces;
     uint scale;
@@ -87,8 +90,9 @@ void main() {
 
                 sample_color = input_emissivity[bid] + sample_color * input_reflectivity[bid] * reweighting_factor * ray_valid;
             }
-            // render debug info on even frames
-            if (frame % 100 < 50) {
+            
+            // render debug info
+            if (debug_view == 1) {
                 const uint bounce_to_render = 0;
                 const uint bid = bounce_to_render * srcysize * srcxsize 
                                + srcy   * srcxsize 

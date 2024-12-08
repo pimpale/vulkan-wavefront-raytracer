@@ -65,6 +65,7 @@ pub fn generate_chunk(data: &WorldgenData, chunk_position: Point3<i32>) -> Vec<B
     let air = data.block_definition_table.block_idx("air").unwrap();
     let grass = data.block_definition_table.block_idx("grass").unwrap();
     let stone = data.block_definition_table.block_idx("stone").unwrap();
+    let lamp = data.block_definition_table.block_idx("lamp").unwrap();
 
     let scale1 = 20.0;
     for x in 0..CHUNK_X_SIZE {
@@ -91,6 +92,11 @@ pub fn generate_chunk(data: &WorldgenData, chunk_position: Point3<i32>) -> Vec<B
                 } else {
                     blocks[xyzidx] = air;
                 }
+
+                // // add lamp
+                // if x == 0 && y == 0 && z == 0 {
+                //     blocks[xyzidx] = lamp;
+                // }
             }
         }
     }

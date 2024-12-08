@@ -36,7 +36,19 @@ impl DirVecs {
 
 #[derive(Clone, Debug)]
 pub struct RenderingPreferences {
-    pub samples: u32, 
+    // 0 == none, 1 == nee
+    pub nee_type: u32, 
+    // 0 == no debug view, 1 == debug view
+    pub debug_view: u32,
+}
+
+impl Default for RenderingPreferences {
+    fn default() -> RenderingPreferences {
+        RenderingPreferences {
+            nee_type: 1,
+            debug_view: 0,
+        }
+    }
 }
 
 pub trait Camera {
@@ -90,9 +102,7 @@ impl SphericalCamera {
             mouse_start: Default::default(),
             mouse_prev: Default::default(),
             mouse_curr: Default::default(),
-            rendering_preferences: RenderingPreferences {
-                samples: 1,
-            },
+            rendering_preferences: RenderingPreferences::default(),
         }
     }
 }

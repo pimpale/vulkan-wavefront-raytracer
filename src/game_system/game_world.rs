@@ -289,7 +289,7 @@ impl GameWorld {
             front,
             right,
             up,
-            rendering_preferences.samples,
+            rendering_preferences,
         );
 
         // at this point we can now garbage collect removed entities from the last step (but not this step yet!)

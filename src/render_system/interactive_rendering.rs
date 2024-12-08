@@ -43,6 +43,8 @@ use vulkano::{
 };
 use winit::window::Window;
 
+use crate::camera::RenderingPreferences;
+
 use super::{
     accumulate_shader,
     bvh::BvhNode,
@@ -507,7 +509,7 @@ impl Renderer {
 
         let mut renderer = Renderer {
             scale: 1,
-            num_bounces: 2,
+            num_bounces: 4,
             surface,
             command_buffer_allocator,
             previous_frame_end: Some(sync::now(device.clone()).boxed()),
@@ -649,7 +651,7 @@ impl Renderer {
         front: Vector3<f32>,
         right: Vector3<f32>,
         up: Vector3<f32>,
-        custom: u32,
+        rendering_preferences: RenderingPreferences,
     ) {
         // free memory
         self.previous_frame_end.as_mut().unwrap().cleanup_finished();
@@ -869,6 +871,7 @@ impl Renderer {
                     self.raytrace_pipeline.layout().clone(),
                     0,
                     raytrace_shader::PushConstants {
+                        nee_type: rendering_preferences.nee_type,
                         xsize: rt_extent[0],
                         ysize: rt_extent[1],
                         bounce_seed: self.frame_count * self.num_bounces + bounce,
@@ -931,9 +934,19 @@ impl Renderer {
                                 range: (b + 1) * 3 * sect_sz..(b + 2) * 3 * sect_sz,
                             },
                         ),
-                        // output nee pdf
+                        // input nee mis weight
                         WriteDescriptorSet::buffer_with_range(
                             5,
+                            DescriptorBufferInfo {
+                                buffer: self.bounce_nee_mis_weight[image_index as usize]
+                                    .as_bytes()
+                                    .clone(),
+                                range: b * sect_sz..(b + 1) * sect_sz,
+                            },
+                        ),
+                        // output nee pdf
+                        WriteDescriptorSet::buffer_with_range(
+                            6,
                             DescriptorBufferInfo {
                                 buffer: self.bounce_nee_pdf[image_index as usize]
                                     .as_bytes()
@@ -959,7 +972,7 @@ impl Renderer {
                     self.nee_pdf_pipeline.layout().clone(),
                     0,
                     nee_pdf_shader::PushConstants {
-                        custom,
+                        nee_type: rendering_preferences.nee_type,
                         xsize: rt_extent[0],
                         ysize: rt_extent[1],
                         bounce_seed: self.frame_count * self.num_bounces + bounce,
@@ -1024,6 +1037,7 @@ impl Renderer {
                 self.accumulate_pipeline.layout().clone(),
                 0,
                 accumulate_shader::PushConstants {
+                    debug_view: rendering_preferences.debug_view,
                     frame: self.frame_count,
                     scale: self.scale,
                     num_bounces: self.num_bounces,

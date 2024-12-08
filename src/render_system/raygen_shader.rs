@@ -1,6 +1,8 @@
 vulkano_shaders::shader! {
     ty: "compute",
     linalg_type: "nalgebra",
+    vulkan_version: "1.2",
+    spirv_version: "1.3",
     src: r"
 #version 460
 #extension GL_EXT_scalar_block_layout: require
