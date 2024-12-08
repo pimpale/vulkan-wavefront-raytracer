@@ -664,7 +664,7 @@ void main() {
     // tensor layout: [y, x, channel]
     const uint bid =  
               gl_GlobalInvocationID.y   * xsize 
-            + gl_GlobalInvocationID.x; 
+            + gl_GlobalInvocationID.x;
             
     const vec3 origin = input_origin[bid];
     const vec3 direction = input_direction[bid];
@@ -770,8 +770,8 @@ void main() {
         // otherwise, the chance is proportional to the importance of our pick
         if(result.success && result.importance > 0.0) {
             // chance of picking the light if our bvh traversal was successful
-            light_pdf_mis_weight = clamp(result.importance / 10.0, 0.0, 0.5);
-            // light_pdf_mis_weight = 0.5;
+            // light_pdf_mis_weight = clamp(result.importance / 10.0, 0.0, 0.5);
+            light_pdf_mis_weight = 0.5;
         }
 
         // randomly choose whether or not to sample the light

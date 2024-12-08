@@ -12,11 +12,7 @@ vulkano_shaders::shader! {
 #define M_PI 3.1415926535897932384626433832795
 #define EPSILON_BLOCK 0.001
 
-layout(
-    local_size_x_id = 1, 
-    local_size_y_id = 2, 
-    local_size_z_id = 3
-) in;
+layout(local_size_x = 32, local_size_y = 32, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) uniform accelerationStructureEXT light_top_level_acceleration_structure;
 
@@ -80,6 +76,7 @@ layout(set = 0, binding = 6) writeonly buffer OutputsDebugInfo {
 };
 
 layout(push_constant, scalar) uniform PushConstants {
+    uint custom;
     uint bounce_seed;
     uint xsize;
     uint ysize;
@@ -513,7 +510,7 @@ float computeNeePdf(
     //         ray_pdf_light = light_distance*light_distance/(cos_theta*light_area);
     //     }
     // }
-    return 1.0;
+    return 0.1;
 }
 
 void main() {
@@ -522,14 +519,14 @@ void main() {
         return;
     }
     
-    // tensor layout: [sample, y, x, channel]
+    // tensor layout: [bounce, y, x, channel]
     const uint bid =  
-            + gl_GlobalInvocationID.z   * ysize * xsize 
             + gl_GlobalInvocationID.y   * xsize 
             + gl_GlobalInvocationID.x; 
             
     const vec3 origin = input_intersection_position[bid];
     const vec3 direction = intersection_out_direction[bid];
+    const vec3 normal = intersection_normal[bid];
 
     // trace ray
     const float t_min = EPSILON_BLOCK;
@@ -548,22 +545,18 @@ void main() {
 
     float nee_pdf = 0.0;
     // trace ray
-    while (true) {
-        rayQueryProceedEXT(ray_query);
-        if (rayQueryGetIntersectionTypeEXT(ray_query, false) == gl_RayQueryCommittedIntersectionTriangleEXT) {
+    while (rayQueryProceedEXT(ray_query)) {
+        if (rayQueryGetIntersectionTypeEXT(ray_query, false) == gl_RayQueryCandidateIntersectionTriangleEXT) {
             uint instance_id = rayQueryGetIntersectionInstanceIdEXT(ray_query, false);
             uint primitive_id = rayQueryGetIntersectionPrimitiveIndexEXT(ray_query, false);
             vec2 barycentric_coords = rayQueryGetIntersectionBarycentricsEXT(ray_query, false);
             nee_pdf += computeNeePdf(
                 origin,
-                intersection_normal[bid],
+                normal,
                 instance_id,
                 primitive_id,
                 barycentric_coords
             );
-        }
-        if (rayQueryGetIntersectionTypeEXT(ray_query, false) == gl_RayQueryCommittedIntersectionNoneEXT) {
-            break;
         }
     }
     

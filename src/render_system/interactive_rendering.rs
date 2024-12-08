@@ -507,7 +507,7 @@ impl Renderer {
 
         let mut renderer = Renderer {
             scale: 1,
-            num_bounces: 4,
+            num_bounces: 2,
             surface,
             command_buffer_allocator,
             previous_frame_end: Some(sync::now(device.clone()).boxed()),
@@ -915,7 +915,7 @@ impl Renderer {
                         WriteDescriptorSet::buffer_with_range(
                             3,
                             DescriptorBufferInfo {
-                                buffer: self.bounce_directions[image_index as usize]
+                                buffer: self.bounce_origins[image_index as usize]
                                     .as_bytes()
                                     .clone(),
                                 range: (b + 1) * 3 * sect_sz..(b + 2) * 3 * sect_sz,
@@ -925,7 +925,7 @@ impl Renderer {
                         WriteDescriptorSet::buffer_with_range(
                             4,
                             DescriptorBufferInfo {
-                                buffer: self.bounce_origins[image_index as usize]
+                                buffer: self.bounce_directions[image_index as usize]
                                     .as_bytes()
                                     .clone(),
                                 range: (b + 1) * 3 * sect_sz..(b + 2) * 3 * sect_sz,
@@ -941,7 +941,7 @@ impl Renderer {
                                 range: b * sect_sz..(b + 1) * sect_sz,
                             },
                         ),
-                        // output debug info
+                        // // output debug info
                         // WriteDescriptorSet::buffer_with_range(
                         //     6,
                         //     DescriptorBufferInfo {
@@ -959,6 +959,7 @@ impl Renderer {
                     self.nee_pdf_pipeline.layout().clone(),
                     0,
                     nee_pdf_shader::PushConstants {
+                        custom,
                         xsize: rt_extent[0],
                         ysize: rt_extent[1],
                         bounce_seed: self.frame_count * self.num_bounces + bounce,
@@ -1023,6 +1024,7 @@ impl Renderer {
                 self.accumulate_pipeline.layout().clone(),
                 0,
                 accumulate_shader::PushConstants {
+                    frame: self.frame_count,
                     scale: self.scale,
                     num_bounces: self.num_bounces,
                     xsize: extent[0],

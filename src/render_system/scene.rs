@@ -147,6 +147,7 @@ where
                     &mut self.blas_command_buffer,
                     self.memory_allocator.clone(),
                     &[&vertex_buffer],
+                    GeometryFlags::OPAQUE,
                 );
 
                 let light_blas = match light_vertex_buffer.clone() {
@@ -154,6 +155,7 @@ where
                         &mut self.blas_command_buffer,
                         self.memory_allocator.clone(),
                         &[&light_vertex_buffer],
+                        GeometryFlags::NO_DUPLICATE_ANY_HIT_INVOCATION,
                     )),
                     None => None,
                 };
@@ -727,6 +729,7 @@ fn create_bottom_level_acceleration_structure<T: BufferContents + vertex_input::
     builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
     memory_allocator: Arc<dyn MemoryAllocator>,
     vertex_buffers: &[&Subbuffer<[T]>],
+    flags: GeometryFlags,
 ) -> Arc<AccelerationStructure> {
     let description = T::per_vertex();
 
@@ -739,7 +742,7 @@ fn create_bottom_level_acceleration_structure<T: BufferContents + vertex_input::
     for &vertex_buffer in vertex_buffers {
         let primitive_count = vertex_buffer.len() as u32 / 3;
         triangles.push(AccelerationStructureGeometryTrianglesData {
-            flags: GeometryFlags::OPAQUE,
+            flags,
             vertex_data: Some(vertex_buffer.clone().into_bytes()),
             vertex_stride: description.stride,
             max_vertex: vertex_buffer.len() as _,

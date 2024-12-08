@@ -45,6 +45,7 @@ layout(set = 0, binding = 8) writeonly buffer OutputsImage {
 };
 
 layout(push_constant, scalar) uniform PushConstants {
+    uint frame;
     uint num_bounces;
     uint scale;
     uint xsize;
@@ -86,6 +87,15 @@ void main() {
 
                 sample_color = input_emissivity[bid] + sample_color * input_reflectivity[bid] * reweighting_factor * ray_valid;
             }
+            // // render debug info on even frames
+            // if (frame % 100 < 50) {
+            //     const uint bounce_to_render = 0;
+            //     const uint bid = bounce_to_render * srcysize * srcxsize 
+            //                    + srcy   * srcxsize 
+            //                    + srcx;
+            //     sample_color = vec3(input_nee_pdf[bid], input_reflectivity[bid].g*10, 0.0);
+            // }
+
             color += sample_color;
         }
     }
