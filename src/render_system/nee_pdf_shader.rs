@@ -43,6 +43,8 @@ layout(buffer_reference, buffer_reference_align=4, scalar) readonly buffer BvhNo
 struct InstanceData {
     // points to the device address of the vertex data for this instance
     uint64_t vertex_buffer_addr;
+    // points to the device address of the light vertex data for this instance
+    uint64_t light_vertex_buffer_addr;
     // points to the device address of the light bvh data for this instance
     uint64_t bvh_node_buffer_addr;
     // the transform of this instance
@@ -459,39 +461,38 @@ float nodeImportance(bool topLevel, vec3 point, vec3 normal, mat4x3 transform, B
 //     }
 // }
 
-float reverseTraverseBvh(
-    // the point from which we're evaluating the importance
-    vec3 shading_point,
-    vec3 shading_normal,
-    // regular instance id
-    uint instance_id,
-    // index of the bvh node in the instance
-    uint bvh_node_idx
-) {
-    // root starts off as the bottom level bvh root,
-    // once we reach the ascend through the entire instance, we will replace root with the top level bvh root
-    BvhNode root = BvhNode(instance_data[instance_id].bvh_node_buffer_addr);
+// float reverseTraverseBvh(
+//     // the point from which we're evaluating the importance
+//     vec3 shading_point,
+//     vec3 shading_normal,
+//     uint instance_id,
+//     // index of the bvh node in the instance
+//     uint bvh_node_idx
+// ) {
+//     // root starts off as the bottom level bvh root,
+//     // once we reach the ascend through the entire instance, we will replace root with the top level bvh root
+//     BvhNode root = BvhNode(instance_data[instance_id].bvh_node_buffer_addr);
 
-    // start off with 1 probability
-    float probability = 1.0;
-    mat4x3 transform = instance_data[instance_id].transform;
-    bool bottomLevel = true;
+//     // start off with 1 probability
+//     float probability = 1.0;
+//     mat4x3 transform = instance_data[instance_id].transform;
+//     bool bottomLevel = true;
 
-    // loop works like this:
-    // ascend 1 level up
-    // compute left and right importance
-    // multiply probability
+//     // loop works like this:
+//     // ascend 1 level up
+//     // compute left and right importance
+//     // multiply probability
 
-    // ascend 1 level up before we start the loop
-    BvhNode node = root[bvh_node_idx];
-    node = root[node.parent_node_idx];
+//     // ascend 1 level up before we start the loop
+//     BvhNode node = root[bvh_node_idx];
+//     node = root[node.parent_node_idx];
 
-    while(true) {
-        // if(bottomLevel) 
-    }
+//     while(true) {
+//         // if(bottomLevel) 
+//     }
     
-    return 0.0;
-}
+//     return 0.0;
+// }
 
 float computeNeePdf(
     vec3 shading_point,
@@ -500,8 +501,6 @@ float computeNeePdf(
     uint light_primitive_id,
     vec2 barycentric_coords
 ) {
-    
-
     // // compute the ray pdf for the light
     // float ray_pdf_light = 0.0;
     // if(light_pdf_mis_weight > 0.0) {
@@ -548,7 +547,6 @@ void main() {
     );
 
     float nee_pdf = 0.0;
-
     // trace ray
     while (true) {
         rayQueryProceedEXT(ray_query);

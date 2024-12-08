@@ -181,12 +181,15 @@ fn window_size_dependent_setup<T: BufferContents>(
     memory_allocator: Arc<StandardMemoryAllocator>,
     images: &[Arc<Image>],
     transfer_src: bool,
+    scale: u32,
     channels: u32,
 ) -> Vec<Subbuffer<[T]>> {
     let render_dests = images
         .iter()
         .map(|image| {
             let extent = image.extent();
+            let xsize = extent[0] * scale;
+            let ysize = extent[1] * scale;
 
             Buffer::new_slice::<T>(
                 memory_allocator.clone(),
@@ -202,7 +205,7 @@ fn window_size_dependent_setup<T: BufferContents>(
                     memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
                     ..Default::default()
                 },
-                (extent[0] * extent[1] * channels) as u64,
+                (xsize * ysize * channels) as u64,
             )
             .unwrap()
         })
@@ -216,8 +219,7 @@ pub fn get_surface_extent(surface: &Surface) -> [u32; 2] {
 }
 
 pub struct Renderer {
-    ray_wg_sz: [u32; 3],
-    num_samples: u32,
+    scale: u32,
     num_bounces: u32,
     surface: Arc<Surface>,
     device: Arc<Device>,
@@ -338,22 +340,8 @@ impl Renderer {
 
         let (swapchain, swapchain_images) = create_swapchain(device.clone(), surface.clone());
 
-        // max number of threads per workgroup
-        let max_threads_per_workgroup: u32 = 32 * 32;
-        let wg_sz_z = num_samples;
-        let xy_patch_pixels = max_threads_per_workgroup.div_ceil(wg_sz_z);
-        let wg_sz_y = u32::isqrt(xy_patch_pixels);
-        let wg_sz_x = u32::isqrt(xy_patch_pixels);
-        let workgroup_specialization = HashMap::from_iter([
-            (1, wg_sz_x.into()),
-            (2, wg_sz_y.into()),
-            (3, wg_sz_z.into()),
-        ]);
-
         let raygen_pipeline = {
             let cs = raygen_shader::load(device.clone())
-                .unwrap()
-                .specialize(workgroup_specialization.clone())
                 .unwrap()
                 .entry_point("main")
                 .unwrap();
@@ -386,8 +374,6 @@ impl Renderer {
 
         let raytrace_pipeline = {
             let cs = raytrace_shader::load(device.clone())
-                .unwrap()
-                .specialize(workgroup_specialization.clone())
                 .unwrap()
                 .entry_point("main")
                 .unwrap();
@@ -429,8 +415,6 @@ impl Renderer {
 
         let nee_pdf_pipeline = {
             let cs = nee_pdf_shader::load(device.clone())
-                .unwrap()
-                .specialize(workgroup_specialization.clone())
                 .unwrap()
                 .entry_point("main")
                 .unwrap();
@@ -522,8 +506,7 @@ impl Renderer {
         .unwrap();
 
         let mut renderer = Renderer {
-            ray_wg_sz: [wg_sz_x, wg_sz_y, wg_sz_z],
-            num_samples,
+            scale: 1,
             num_bounces: 4,
             surface,
             command_buffer_allocator,
@@ -583,74 +566,76 @@ impl Renderer {
             self.memory_allocator.clone(),
             &self.swapchain_images,
             true,
-            3 * (self.num_bounces + 1) * self.num_samples,
+            self.scale,
+            3 * (self.num_bounces + 1),
         );
         self.bounce_directions = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
             true,
-            3 * (self.num_bounces + 1) * self.num_samples,
+            self.scale,
+            3 * (self.num_bounces + 1),
         );
         self.bounce_normals = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
             true,
-            3 * self.num_bounces * self.num_samples,
+            self.scale,
+            3 * self.num_bounces,
         );
         self.bounce_emissivity = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
             true,
-            3 * self.num_bounces * self.num_samples,
+            self.scale,
+            3 * self.num_bounces,
         );
         self.bounce_reflectivity = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
             true,
-            3 * self.num_bounces * self.num_samples,
+            self.scale,
+            3 * self.num_bounces,
         );
         self.bounce_nee_mis_weight = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
             true,
-            1 * self.num_bounces * self.num_samples,
+            self.scale,
+            1 * self.num_bounces,
         );
         self.bounce_bsdf_pdf = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
             true,
-            1 * self.num_bounces * self.num_samples,
+            self.scale,
+            1 * self.num_bounces,
         );
         self.bounce_nee_pdf = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
             true,
-            1 * self.num_bounces * self.num_samples,
+            self.scale,
+            1 * self.num_bounces,
         );
         self.bounce_debug_info = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
             true,
-            4 * self.num_bounces * self.num_samples,
+            self.scale,
+            4 * self.num_bounces,
         );
         self.accumulate_target = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
             true,
+            1,
             4,
         );
     }
 
-    fn ray_shader_group_count(&self, extent: &[u32; 2]) -> [u32; 3] {
-        [
-            extent[0].div_ceil(self.ray_wg_sz[0]),
-            extent[1].div_ceil(self.ray_wg_sz[1]),
-            self.num_samples.div_ceil(self.ray_wg_sz[2]),
-        ]
-    }
-
-    fn accumulate_shader_group_count(&self, extent: &[u32; 2]) -> [u32; 3] {
-        [extent[0].div_ceil(32), extent[1].div_ceil(32), 1]
+    fn group_count(&self, extent: &[u32; 2]) -> [u32; 3] {
+        [extent[0].div_ceil(32)*self.scale, extent[1].div_ceil(32)*self.scale, 1]
     }
 
     pub fn render(
@@ -658,7 +643,6 @@ impl Renderer {
         build_future: Box<dyn GpuFuture>,
         top_level_acceleration_structure: Arc<AccelerationStructure>,
         light_top_level_acceleration_structure: Arc<AccelerationStructure>,
-        light_instance_data: Subbuffer<[InstanceData]>,
         instance_data: Subbuffer<[InstanceData]>,
         luminance_bvh: Subbuffer<[BvhNode]>,
         eye: Point3<f32>,
@@ -712,6 +696,7 @@ impl Renderer {
 
         let extent_3d = self.swapchain_images[image_index as usize].extent();
         let extent = [extent_3d[0], extent_3d[1]];
+        let rt_extent = [extent[0] * self.scale, extent[1] * self.scale];
 
         builder
             .bind_pipeline_compute(self.raygen_pipeline.clone())
@@ -742,16 +727,16 @@ impl Renderer {
                         front,
                         right,
                         up,
-                        screen_size: extent.into(),
+                        screen_size: rt_extent.into(),
                     },
                     frame_seed: self.frame_count,
                 },
             )
             .unwrap()
-            .dispatch(self.ray_shader_group_count(&extent))
+            .dispatch(self.group_count(&rt_extent))
             .unwrap();
 
-        let sect_sz = (size_of::<f32>() as u32 * self.num_samples * extent[0] * extent[1]) as u64;
+        let sect_sz = (size_of::<f32>() as u32 * rt_extent[0] * rt_extent[1]) as u64;
 
         // bind raytrace pipeline
         builder
@@ -884,14 +869,14 @@ impl Renderer {
                     self.raytrace_pipeline.layout().clone(),
                     0,
                     raytrace_shader::PushConstants {
-                        xsize: extent[0],
-                        ysize: extent[1],
+                        xsize: rt_extent[0],
+                        ysize: rt_extent[1],
                         bounce_seed: self.frame_count * self.num_bounces + bounce,
                         tl_bvh_addr: luminance_bvh.device_address().unwrap().get(),
                     },
                 )
                 .unwrap()
-                .dispatch(self.ray_shader_group_count(&extent))
+                .dispatch(self.group_count(&rt_extent))
                 .unwrap();
         }
 
@@ -908,14 +893,14 @@ impl Renderer {
             builder
                 .push_descriptor_set(
                     PipelineBindPoint::Compute,
-                    self.raytrace_pipeline.layout().clone(),
+                    self.nee_pdf_pipeline.layout().clone(),
                     0,
                     vec![
                         WriteDescriptorSet::acceleration_structure(
                             0,
                             light_top_level_acceleration_structure.clone(),
                         ),
-                        WriteDescriptorSet::buffer(1, instance_data.clone()),
+                        // WriteDescriptorSet::buffer(1, instance_data.clone()),
                         // input intersection normal
                         WriteDescriptorSet::buffer_with_range(
                             2,
@@ -957,15 +942,15 @@ impl Renderer {
                             },
                         ),
                         // output debug info
-                        WriteDescriptorSet::buffer_with_range(
-                            6,
-                            DescriptorBufferInfo {
-                                buffer: self.bounce_debug_info[image_index as usize]
-                                    .as_bytes()
-                                    .clone(),
-                                range: b * 4 * sect_sz..(b + 1) * 4 * sect_sz,
-                            },
-                        ),
+                        // WriteDescriptorSet::buffer_with_range(
+                        //     6,
+                        //     DescriptorBufferInfo {
+                        //         buffer: self.bounce_debug_info[image_index as usize]
+                        //             .as_bytes()
+                        //             .clone(),
+                        //         range: b * 4 * sect_sz..(b + 1) * 4 * sect_sz,
+                        //     },
+                        // ),
                     ]
                     .into(),
                 )
@@ -974,14 +959,14 @@ impl Renderer {
                     self.nee_pdf_pipeline.layout().clone(),
                     0,
                     nee_pdf_shader::PushConstants {
-                        xsize: extent[0],
-                        ysize: extent[1],
+                        xsize: rt_extent[0],
+                        ysize: rt_extent[1],
                         bounce_seed: self.frame_count * self.num_bounces + bounce,
                         tl_bvh_addr: luminance_bvh.device_address().unwrap().get(),
                     },
                 )
                 .unwrap()
-                .dispatch(self.ray_shader_group_count(&extent))
+                .dispatch(self.group_count(&rt_extent))
                 .unwrap();
         }
 
@@ -1038,14 +1023,14 @@ impl Renderer {
                 self.accumulate_pipeline.layout().clone(),
                 0,
                 accumulate_shader::PushConstants {
-                    num_samples: self.num_samples,
+                    scale: self.scale,
                     num_bounces: self.num_bounces,
                     xsize: extent[0],
                     ysize: extent[1],
                 },
             )
             .unwrap()
-            .dispatch(self.accumulate_shader_group_count(&extent))
+            .dispatch(self.group_count(&extent))
             .unwrap()
             .copy_buffer_to_image(CopyBufferToImageInfo::buffer_image(
                 self.accumulate_target[image_index as usize].clone(),

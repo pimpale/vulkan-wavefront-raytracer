@@ -9,12 +9,14 @@ use super::super::vertex::Vertex3D;
 
 #[derive(Clone, Debug)]
 struct BuildBvhLeaf {
+    parent_idx: usize,
     first_prim_idx_idx: usize,
     prim_count: usize,
 }
 
 #[derive(Clone, Debug)]
 struct BuildBvhInternalNode {
+    parent_idx: usize,
     left_child_idx: usize,
     right_child_idx: usize,
 }
@@ -156,15 +158,19 @@ fn subdivide(
 
             // create left child
             let left_leaf = BuildBvhLeaf {
+                parent_idx: node_idx,
                 first_prim_idx_idx: leaf.first_prim_idx_idx,
                 prim_count: partitions.0.len(),
             };
 
             // create right child
             let right_leaf = BuildBvhLeaf {
+                parent_idx: node_idx,
                 first_prim_idx_idx: leaf.first_prim_idx_idx + partitions.0.len(),
                 prim_count: partitions.1.len(),
             };
+
+            let parent_idx = leaf.parent_idx;
 
             // insert children
             let left_child_idx = insert_blas_leaf_node(left_leaf, nodes, prim_idxs, prim_aabbs);
@@ -189,6 +195,7 @@ fn subdivide(
             );
 
             nodes[node_idx].kind = BuildBvhNodeKind::InternalNode(BuildBvhInternalNode {
+                parent_idx,
                 left_child_idx,
                 right_child_idx,
             });
@@ -196,15 +203,19 @@ fn subdivide(
         BuildBvhNodeKind::Leaf(ref leaf) if leaf.prim_count == 2 => {
             // create left child
             let left_leaf = BuildBvhLeaf {
+                parent_idx: node_idx,
                 first_prim_idx_idx: leaf.first_prim_idx_idx,
                 prim_count: 1,
             };
 
             // create right child
             let right_leaf = BuildBvhLeaf {
+                parent_idx: node_idx,
                 first_prim_idx_idx: leaf.first_prim_idx_idx + 1,
                 prim_count: 1,
             };
+
+            let parent_idx = leaf.parent_idx;
 
             // insert children
             let left_child_idx = insert_blas_leaf_node(left_leaf, nodes, prim_idxs, prim_aabbs);
@@ -212,6 +223,7 @@ fn subdivide(
 
             // update parent
             nodes[node_idx].kind = BuildBvhNodeKind::InternalNode(BuildBvhInternalNode {
+                parent_idx,
                 left_child_idx,
                 right_child_idx,
             });
@@ -280,6 +292,7 @@ pub fn build_bl_bvh(
     // create root node
     let root_node_idx = insert_blas_leaf_node(
         BuildBvhLeaf {
+            parent_idx: u32::MAX as usize,
             first_prim_idx_idx: 0,
             prim_count: n_prims,
         },
@@ -329,6 +342,7 @@ pub fn build_bl_bvh(
                     right_luminance_or_v2_2: v2.y,
                     down_luminance_or_v2_3: v2.z,
                     up_luminance_or_prim_luminance: prim_luminance_per_area[prim_idx],
+                    parent_idx: leaf.parent_idx as u32,
                     ..Default::default()
                 }
             }
@@ -339,6 +353,7 @@ pub fn build_bl_bvh(
                     right_node_idx_or_prim_idx: internal_node.right_child_idx as u32,
                     min_or_v0: (node.aabb.min().coords - padding).into(),
                     max_or_v1: (node.aabb.max().coords + padding).into(),
+                    parent_idx: internal_node.parent_idx as u32,
                     ..Default::default()
                 }
             }
@@ -489,6 +504,7 @@ pub fn build_tl_bvh(
     // create root node
     let root_node_idx = insert_blas_leaf_node(
         BuildBvhLeaf {
+            parent_idx: u32::MAX as usize,
             first_prim_idx_idx: 0,
             prim_count: n_prims,
         },
@@ -533,6 +549,7 @@ pub fn build_tl_bvh(
                     up_luminance_or_prim_luminance: prim_luminances[prim_idx][3],
                     back_luminance: prim_luminances[prim_idx][4],
                     front_luminance: prim_luminances[prim_idx][5],
+                    parent_idx: leaf.parent_idx as u32,
                 }
             }
             BuildBvhNodeKind::InternalNode(ref internal_node) => BvhNode {
@@ -540,6 +557,7 @@ pub fn build_tl_bvh(
                 right_node_idx_or_prim_idx: internal_node.right_child_idx as u32,
                 min_or_v0: (node.aabb.min().coords - padding).into(),
                 max_or_v1: (node.aabb.max().coords + padding).into(),
+                parent_idx: internal_node.parent_idx as u32,
                 ..Default::default()
             },
         })

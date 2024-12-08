@@ -274,7 +274,6 @@ impl GameWorld {
             top_level_acceleration_structure,
             light_top_level_acceleration_structure,
             instance_data,
-            light_instance_data,
             luminance_bvh,
             build_future,
         ) = self.scene.borrow_mut().get_tlas();
@@ -285,7 +284,6 @@ impl GameWorld {
             top_level_acceleration_structure,
             light_top_level_acceleration_structure,
             instance_data,
-            light_instance_data,
             luminance_bvh,
             eye,
             front,

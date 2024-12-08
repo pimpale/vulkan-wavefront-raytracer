@@ -46,7 +46,7 @@ layout(set = 0, binding = 8) writeonly buffer OutputsImage {
 
 layout(push_constant, scalar) uniform PushConstants {
     uint num_bounces;
-    uint num_samples;
+    uint scale;
     uint xsize;
     uint ysize;
 };
@@ -55,38 +55,43 @@ void main() {
     if(gl_GlobalInvocationID.x >= xsize || gl_GlobalInvocationID.y >= ysize) {
         return;
     }
+    const uint srcxsize = xsize * scale;
+    const uint srcysize = ysize * scale;
 
     vec3 color = vec3(0.0);
-    for (uint sample_id = 0; sample_id < num_samples; sample_id++) {
-        // compute the color for this sample
-        vec3 sample_color = vec3(0.0);
-        for(int bounce = int(num_bounces)-1; bounce >= 0; bounce--) {            
-            // tensor layout: [bounce, sample, y, x, channel]
-            const uint bid = bounce         * num_samples * ysize * xsize 
-                + sample_id                 * ysize * xsize 
-                + gl_GlobalInvocationID.y   * xsize 
-                + gl_GlobalInvocationID.x;
-            // whether the ray is valid
-            float ray_valid = input_direction[bid] == vec3(0.0) ? 0.0 : 1.0;
+    for (uint scaley = 0; scaley < scale; scaley++) {
+        const uint srcy = gl_GlobalInvocationID.y * scale + scaley;
+        for(uint scalex = 0; scalex < scale; scalex++) {
+            const uint srcx = gl_GlobalInvocationID.x * scale + scalex;
+            // compute the color for this sample
+            vec3 sample_color = vec3(0.0);
+            for(int bounce = int(num_bounces)-1; bounce >= 0; bounce--) {            
+                // tensor layout: [bounce, y, x, channel]
+                const uint bid = bounce * srcysize * srcxsize 
+                               + srcy   * srcxsize 
+                               + srcx;
+                // whether the ray is valid
+                float ray_valid = input_direction[bid] == vec3(0.0) ? 0.0 : 1.0;
 
-            // compute importance sampling data
-            float bsdf_pdf = input_bsdf_pdf[bid];
-            float nee_pdf = input_nee_pdf[bid];
-            float nee_mis_weight = input_nee_mis_weight[bid];
-            // this is our sampling distribution: 
-            // mis_weight proportion of the time, we sample from the light source, and 1-mis_weight proportion of the time, we sample from the BSDF
-            float qx = nee_pdf * nee_mis_weight + (1.0 - nee_mis_weight) * bsdf_pdf;
-            // this is the distribution we are trying to compute the expectation over
-            float px = bsdf_pdf;
-            float reweighting_factor = px / qx;
+                // compute importance sampling data
+                float bsdf_pdf = input_bsdf_pdf[bid];
+                float nee_pdf = input_nee_pdf[bid];
+                float nee_mis_weight = input_nee_mis_weight[bid];
+                // this is our sampling distribution: 
+                // mis_weight proportion of the time, we sample from the light source, and 1-mis_weight proportion of the time, we sample from the BSDF
+                float qx = nee_pdf * nee_mis_weight + (1.0 - nee_mis_weight) * bsdf_pdf;
+                // this is the distribution we are trying to compute the expectation over
+                float px = bsdf_pdf;
+                float reweighting_factor = px / qx;
 
-            sample_color = input_emissivity[bid] + sample_color * input_reflectivity[bid] * reweighting_factor * ray_valid;
+                sample_color = input_emissivity[bid] + sample_color * input_reflectivity[bid] * reweighting_factor * ray_valid;
+            }
+            color += sample_color;
         }
-        color += sample_color;
     }
 
     // average the samples
-    vec3 pixel_color = color / float(num_samples);
+    vec3 pixel_color = color / float(scale*scale);
     output_image[gl_GlobalInvocationID.y*xsize + gl_GlobalInvocationID.x] = u8vec4(pixel_color.zyx*255, 255);
 }
 ",

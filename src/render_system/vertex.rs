@@ -52,6 +52,7 @@ impl LightVertex3D {
 #[repr(C)]
 pub struct InstanceData {
     pub vertex_buffer_addr: u64,
+    pub light_vertex_buffer_addr: u64,
     pub bvh_node_buffer_addr: u64,
     pub transform: [[f32; 3]; 4],
 }

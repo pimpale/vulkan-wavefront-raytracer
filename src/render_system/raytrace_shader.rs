@@ -12,11 +12,7 @@ vulkano_shaders::shader! {
 #define M_PI 3.1415926535897932384626433832795
 #define EPSILON_BLOCK 0.001
 
-layout(
-    local_size_x_id = 1, 
-    local_size_y_id = 2, 
-    local_size_z_id = 3
-) in;
+layout(local_size_x = 32, local_size_y = 32, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) uniform sampler s;
 layout(set = 0, binding = 1) uniform texture2D tex[];
@@ -46,6 +42,8 @@ layout(buffer_reference, buffer_reference_align=4, scalar) readonly buffer BvhNo
 struct InstanceData {
     // points to the device address of the vertex data for this instance
     uint64_t vertex_buffer_addr;
+    // points to the device address of the light vertex data for this instance
+    uint64_t light_vertex_buffer_addr;
     // points to the device address of the light bvh data for this instance
     uint64_t bvh_node_buffer_addr;
     // the transform of this instance
@@ -663,10 +661,9 @@ void main() {
         return;
     }
     
-    // tensor layout: [sample, y, x, channel]
+    // tensor layout: [y, x, channel]
     const uint bid =  
-            + gl_GlobalInvocationID.z   * ysize * xsize 
-            + gl_GlobalInvocationID.y   * xsize 
+              gl_GlobalInvocationID.y   * xsize 
             + gl_GlobalInvocationID.x; 
             
     const vec3 origin = input_origin[bid];

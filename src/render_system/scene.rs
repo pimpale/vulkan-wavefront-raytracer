@@ -212,7 +212,6 @@ where
         Arc<AccelerationStructure>,
         Arc<AccelerationStructure>,
         Subbuffer<[InstanceData]>,
-        Subbuffer<[InstanceData]>,
         Subbuffer<[BvhNode]>,
         Box<dyn GpuFuture>,
     ) {
@@ -236,6 +235,7 @@ where
                         |Object {
                              isometry,
                              vertex_buffer,
+                             light_vertex_buffer,
                              light_bl_bvh_buffer,
                              ..
                          }| InstanceData {
@@ -247,6 +247,12 @@ where
                             bvh_node_buffer_addr: match light_bl_bvh_buffer {
                                 Some(light_bl_bvh_buffer) => {
                                     light_bl_bvh_buffer.device_address().unwrap().get()
+                                }
+                                None => 0,
+                            },
+                            light_vertex_buffer_addr: match light_vertex_buffer {
+                                Some(light_vertex_buffer) => {
+                                    light_vertex_buffer.device_address().unwrap().get()
                                 }
                                 None => 0,
                             },
