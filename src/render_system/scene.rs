@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, HashMap, VecDeque},
     fmt::Debug,
     ops::Sub,
     sync::Arc,
@@ -219,55 +219,6 @@ where
     ) {
         // rebuild the instance buffer if any object was moved, added, or removed
         if self.cached_tlas_state != TopLevelAccelerationStructureState::UpToDate {
-            let instance_data = Buffer::from_iter(
-                self.memory_allocator.clone(),
-                BufferCreateInfo {
-                    usage: BufferUsage::STORAGE_BUFFER,
-                    ..Default::default()
-                },
-                AllocationCreateInfo {
-                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                    ..Default::default()
-                },
-                self.objects
-                    .values()
-                    .flatten()
-                    .map(
-                        |Object {
-                             isometry,
-                             vertex_buffer,
-                             light_vertex_buffer,
-                             light_bl_bvh_buffer,
-                             ..
-                         }| InstanceData {
-                            transform: {
-                                let mat4: Matrix4<f32> = isometry.clone().into();
-                                let mat3x4: Matrix3x4<f32> = mat4.fixed_view::<3, 4>(0, 0).into();
-                                mat3x4.into()
-                            },
-                            bvh_node_buffer_addr: match light_bl_bvh_buffer {
-                                Some(light_bl_bvh_buffer) => {
-                                    light_bl_bvh_buffer.device_address().unwrap().get()
-                                }
-                                None => 0,
-                            },
-                            light_vertex_buffer_addr: match light_vertex_buffer {
-                                Some(light_vertex_buffer) => {
-                                    light_vertex_buffer.device_address().unwrap().get()
-                                }
-                                None => 0,
-                            },
-                            light_bvh_tl_idx: 0,
-                            vertex_buffer_addr: vertex_buffer.device_address().unwrap().get(),
-                        },
-                    )
-                    .collect::<Vec<_>>(),
-            )
-            .unwrap();
-
-            self.cached_instance_data = Some(instance_data);
-
             let ((isometries, aabbs), (luminances, instance_ids)): (
                 (Vec<_>, Vec<_>),
                 (Vec<_>, Vec<_>),
@@ -300,6 +251,67 @@ where
             } else {
                 bvh::build::build_tl_bvh(&isometries, &aabbs, &luminances, &instance_ids)
             };
+
+            // create mapping from the primitive index (as input into the function to the bvh node index)
+            let mut prim2node = HashMap::new();
+            for (i, node) in light_tl_bvh.iter().enumerate() {
+                if node.left_node_idx == u32::MAX {
+                    prim2node.insert(node.right_node_idx_or_prim_idx, i as u32);
+                }
+            }
+
+            let instance_data = Buffer::from_iter(
+                self.memory_allocator.clone(),
+                BufferCreateInfo {
+                    usage: BufferUsage::STORAGE_BUFFER,
+                    ..Default::default()
+                },
+                AllocationCreateInfo {
+                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                    ..Default::default()
+                },
+                self.objects
+                    .values()
+                    .flatten()
+                    .enumerate()
+                    .map(
+                        |(
+                            i,
+                            Object {
+                                isometry,
+                                vertex_buffer,
+                                light_vertex_buffer,
+                                light_bl_bvh_buffer,
+                                ..
+                            },
+                        )| InstanceData {
+                            transform: {
+                                let mat4: Matrix4<f32> = isometry.clone().into();
+                                let mat3x4: Matrix3x4<f32> = mat4.fixed_view::<3, 4>(0, 0).into();
+                                mat3x4.into()
+                            },
+                            bvh_node_buffer_addr: match light_bl_bvh_buffer {
+                                Some(light_bl_bvh_buffer) => {
+                                    light_bl_bvh_buffer.device_address().unwrap().get()
+                                }
+                                None => 0,
+                            },
+                            light_vertex_buffer_addr: match light_vertex_buffer {
+                                Some(light_vertex_buffer) => {
+                                    light_vertex_buffer.device_address().unwrap().get()
+                                }
+                                None => 0,
+                            },
+                            light_bvh_tl_idx: prim2node.get(&(i as u32)).copied().unwrap_or(0),
+                            vertex_buffer_addr: vertex_buffer.device_address().unwrap().get(),
+                        },
+                    )
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap();
+
+            self.cached_instance_data = Some(instance_data);
 
             let light_tl_bvh_buffer = Buffer::from_iter(
                 self.memory_allocator.clone(),

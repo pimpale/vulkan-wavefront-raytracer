@@ -900,7 +900,7 @@ impl Renderer {
                             0,
                             light_top_level_acceleration_structure.clone(),
                         ),
-                        // WriteDescriptorSet::buffer(1, instance_data.clone()),
+                        WriteDescriptorSet::buffer(1, instance_data.clone()),
                         // input intersection normal
                         WriteDescriptorSet::buffer_with_range(
                             2,

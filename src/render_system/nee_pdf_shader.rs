@@ -74,7 +74,6 @@ layout(set = 0, binding = 4, scalar) readonly buffer InputsIntersectionOutDirect
     vec3 intersection_out_direction[];
 };
 
-
 layout(set = 0, binding = 5) writeonly buffer OutputsNeePdf {
     float output_nee_pdf[];
 };
@@ -390,82 +389,6 @@ float nodeImportance(bool topLevel, vec3 point, vec3 normal, mat4x3 transform, B
     }
 }
 
-// BvhTraverseResult traverseBvh(
-//     vec3 point,
-//     vec3 normal,
-//     vec3 light_point
-// ) {
-//     BvhNode root = BvhNode(tl_bvh_addr);
-//     BvhNode node = root;
-
-//     // check that the top level bvh isn't a dummy node
-//     if(node.left_node_idx == 0xFFFFFFFF && node.right_node_idx_or_prim_idx == 0xFFFFFFFF) {
-//         return BvhTraverseResult(
-//             false,
-//             0,
-//             0,
-//             1.0,
-//             0.0
-//         );
-//     }
-
-//     float probability = 1.0;
-//     mat4x3 transform = mat4x3(1.0);
-//     uint instance_index = 0xFFFFFFFF;
-//     bool bottomLevel = true;
-//     while(true) {
-//         if(bottomLevel && node.left_node_idx == 0xFFFFFFFF) {
-//             instance_index = node.right_node_idx_or_prim_idx;
-//             InstanceData id = instance_data[node.right_node_idx_or_prim_idx];
-//             transform = id.transform;
-//             topLevel = false;
-//             root = BvhNode(id.bvh_node_buffer_addr);
-//             node = root;
-//             if(importance == 0.0) {
-//                 importance = nodeImportance(topLevel, point, normal, transform, node);
-//             }
-//         }
-//         if(!topLevel && node.left_node_idx == 0xFFFFFFFF) {
-//             return BvhTraverseResult(
-//                 true,
-//                 instance_index,
-//                 node.right_node_idx_or_prim_idx,
-//                 probability,
-//                 importance
-//             );
-//         }
-
-//         // otherwise pick a child node
-//         BvhNode left = root[node.left_node_idx];
-//         BvhNode right = root[node.right_node_idx_or_prim_idx];
-
-//         float left_importance = nodeImportance(topLevel, point, normal, transform, left);
-//         float right_importance = nodeImportance(topLevel, point, normal, transform, right);
-//         float total_importance = left_importance + right_importance;
-//         float left_importance_normalized = left_importance / total_importance;
-//         float right_importance_normalized = right_importance / total_importance;
-
-//         if (total_importance == 0.0) {
-//             return BvhTraverseResult(
-//                 false,
-//                 0,
-//                 0,
-//                 probability,
-//                 0.0
-//             );
-//         } else if(murmur3_finalizef(seed) < left_importance_normalized) {
-//             node = left;
-//             probability *= left_importance_normalized;
-//             importance = left_importance;
-//         } else {
-//             node = right;
-//             probability *= right_importance_normalized;
-//             importance = right_importance;
-//         }
-//         seed = murmur3_combine(seed, 0);
-//     }
-// }
-
 float reverseTraverseBvh(
     // the point from which we're evaluating the importance
     vec3 shading_point,
@@ -504,7 +427,19 @@ float reverseTraverseBvh(
                 // ascend to the top level
                 topLevel = true;
                 root = BvhNode(tl_bvh_addr);
-                node = root[id.light_bvh_tl_idx];
+                old_node_idx = id.light_bvh_tl_idx;
+                
+                // we are now at a leaf node
+                // we need to ascend until we hit an internal node (one which has a choice)
+                BvhNode tl_leaf_node = root[id.light_bvh_tl_idx];
+                // note that the tl_leaf_node could be the top level root
+                if(tl_leaf_node.parent_node_idx == 0xFFFFFFFF) {
+                    // we are at the top level
+                    return probability;
+                }
+
+                node_idx = tl_leaf_node.parent_node_idx;
+                node = root[tl_leaf_node.parent_node_idx];
                 transform = mat4x3(1.0);
             }
         } else {
@@ -522,7 +457,7 @@ float reverseTraverseBvh(
         float left_importance_normalized = left_importance / total_importance;
         float right_importance_normalized = right_importance / total_importance;
 
-        if(old_node_idx == left.parent_node_idx) {
+        if(old_node_idx == node.left_node_idx) {
             probability *= left_importance_normalized;
         } else {
             probability *= right_importance_normalized;
