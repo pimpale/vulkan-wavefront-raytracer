@@ -54,5 +54,6 @@ pub struct InstanceData {
     pub vertex_buffer_addr: u64,
     pub light_vertex_buffer_addr: u64,
     pub bvh_node_buffer_addr: u64,
+    pub light_bvh_tl_idx: u32,
     pub transform: [[f32; 3]; 4],
 }

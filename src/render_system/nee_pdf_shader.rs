@@ -22,6 +22,12 @@ layout(buffer_reference, buffer_reference_align=4, scalar) readonly buffer Verte
     vec2 uv;
 };
 
+layout(buffer_reference, buffer_reference_align=4, scalar) readonly buffer LightVertex {
+    vec3 position;
+    uint light_bvh_node_idx;
+};
+
+
 layout(buffer_reference, buffer_reference_align=4, scalar) readonly buffer BvhNode {
     uint left_node_idx;
     uint right_node_idx_or_prim_idx;
@@ -33,7 +39,7 @@ layout(buffer_reference, buffer_reference_align=4, scalar) readonly buffer BvhNo
     float up_luminance_or_prim_luminance;
     float back_luminance;
     float front_luminance;
-    float parent_node_idx;
+    uint parent_node_idx;
 };
 
 struct InstanceData {
@@ -43,6 +49,8 @@ struct InstanceData {
     uint64_t light_vertex_buffer_addr;
     // points to the device address of the light bvh data for this instance
     uint64_t bvh_node_buffer_addr;
+    // the offset of the bottom level light bvh in the top level bvh
+    uint light_bvh_tl_idx;
     // the transform of this instance
     mat4x3 transform;
 };
@@ -458,59 +466,117 @@ float nodeImportance(bool topLevel, vec3 point, vec3 normal, mat4x3 transform, B
 //     }
 // }
 
-// float reverseTraverseBvh(
-//     // the point from which we're evaluating the importance
-//     vec3 shading_point,
-//     vec3 shading_normal,
-//     uint instance_id,
-//     // index of the bvh node in the instance
-//     uint bvh_node_idx
-// ) {
-//     // root starts off as the bottom level bvh root,
-//     // once we reach the ascend through the entire instance, we will replace root with the top level bvh root
-//     BvhNode root = BvhNode(instance_data[instance_id].bvh_node_buffer_addr);
+float reverseTraverseBvh(
+    // the point from which we're evaluating the importance
+    vec3 shading_point,
+    vec3 shading_normal,
+    InstanceData id,
+    // index of the bvh node in the instance
+    uint bvh_node_idx
+) {
+    // root starts off as the bottom level bvh root,
+    // once we reach the ascend through the entire instance, we will replace root with the top level bvh root
+    BvhNode root = BvhNode(id.bvh_node_buffer_addr);
 
-//     // start off with 1 probability
-//     float probability = 1.0;
-//     mat4x3 transform = instance_data[instance_id].transform;
-//     bool bottomLevel = true;
+    // start off with 1 probability
+    float probability = 1.0;
+    mat4x3 transform = id.transform;
+    bool topLevel = false;
 
-//     // loop works like this:
-//     // ascend 1 level up
-//     // compute left and right importance
-//     // multiply probability
+    // loop works like this:
+    // start in the bottom layer with a primitive node
+    // ascend 1 level up
+    // compute left and right importance
+    // multiply probability
+    // if we are at the top level, we are done
 
-//     // ascend 1 level up before we start the loop
-//     BvhNode node = root[bvh_node_idx];
-//     node = root[node.parent_node_idx];
+    BvhNode node = root[bvh_node_idx];
+    uint node_idx = bvh_node_idx;
 
-//     while(true) {
-//         // if(bottomLevel) 
-//     }
-    
-//     return 0.0;
-// }
+    while(true) {
+        // ascend
+        uint old_node_idx = node_idx;
+        if(node.parent_node_idx == 0xFFFFFFFF) {
+            if(topLevel) {
+                // we are at the top level
+                return probability;
+            } else {
+                // ascend to the top level
+                topLevel = true;
+                root = BvhNode(tl_bvh_addr);
+                node = root[id.light_bvh_tl_idx];
+                transform = mat4x3(1.0);
+            }
+        } else {
+            node_idx = node.parent_node_idx;
+            node = root[node.parent_node_idx];
+        }
+
+        // look at left and right children
+        BvhNode left = root[node.left_node_idx];
+        BvhNode right = root[node.right_node_idx_or_prim_idx];
+
+        float left_importance = nodeImportance(topLevel, shading_point, shading_normal, transform, left);
+        float right_importance = nodeImportance(topLevel, shading_point, shading_normal, transform, right);
+        float total_importance = left_importance + right_importance;
+        float left_importance_normalized = left_importance / total_importance;
+        float right_importance_normalized = right_importance / total_importance;
+
+        if(old_node_idx == left.parent_node_idx) {
+            probability *= left_importance_normalized;
+        } else {
+            probability *= right_importance_normalized;
+        }
+    }
+}
+
+vec3 pointOnTriangle(vec3[3] tri, vec2 barycentric_coords) {
+    return barycentric_coords.x*tri[0] + barycentric_coords.y*tri[1] + (1.0 - barycentric_coords.x - barycentric_coords.y)*tri[2];
+}
+
 
 float computeNeePdf(
     vec3 shading_point,
     vec3 shading_normal,
-    uint light_instance_id,
+    vec3 outgoing_direction,
+    uint instance_id,
     uint light_primitive_id,
     vec2 barycentric_coords
 ) {
-    // // compute the ray pdf for the light
-    // float ray_pdf_light = 0.0;
-    // if(light_pdf_mis_weight > 0.0) {
-    //     float t;
-    //     if(rayVisibleTriangleIntersect(new_origin, new_direction, vt, t)) {
-    //         vec3 sampled_light_point = new_origin + t*new_direction;
-    //         float light_area = getVisibleTriangleArea(vt);
-    //         float light_distance = length(sampled_light_point - new_origin);
-    //         // what is the probability of picking this ray if we were picking a random point on the light?
-    //         ray_pdf_light = light_distance*light_distance/(cos_theta*light_area);
-    //     }
-    // }
-    return 0.1;
+
+    // get light vertex data
+    InstanceData id = instance_data[instance_id];
+    vec3[3] tri_raw = vec3[3](
+        LightVertex(id.light_vertex_buffer_addr)[3*light_primitive_id + 0].position,
+        LightVertex(id.light_vertex_buffer_addr)[3*light_primitive_id + 1].position,
+        LightVertex(id.light_vertex_buffer_addr)[3*light_primitive_id + 2].position
+    );
+
+    // transform triangle
+    vec3[3] tri_light = triangleTransform(id.transform, tri_raw);
+
+    // find point on triangle
+    vec3 point_on_triangle = pointOnTriangle(tri_light, barycentric_coords);
+
+    // convert to visible triangle struct
+    VisibleTriangles vt = splitIntoVisibleTriangles(shading_point, shading_normal, tri_light);
+
+    // probability of picking this ray if we were picking a random point on the light
+    const float light_distance = length(point_on_triangle - shading_point);
+    const float light_area = getVisibleTriangleArea(vt);
+    const float cos_theta = dot(shading_normal, outgoing_direction);
+    const float pointPickProbability = light_distance*light_distance/(cos_theta*light_area);
+
+    // probability of picking the primitive
+    uint light_bvh_node_idx = LightVertex(id.light_vertex_buffer_addr)[3*light_primitive_id].light_bvh_node_idx;
+    const float primPickProbability = reverseTraverseBvh(
+        shading_point,
+        shading_normal,
+        id,
+        LightVertex(id.light_vertex_buffer_addr)[3*light_primitive_id].light_bvh_node_idx
+    );
+
+    return primPickProbability * pointPickProbability;
 }
 
 void main() {
@@ -535,7 +601,7 @@ void main() {
     rayQueryInitializeEXT(
         ray_query,
         light_top_level_acceleration_structure,
-        gl_RayFlagsNoOpaqueEXT, // any hit
+        gl_RayFlagsCullBackFacingTrianglesEXT, // cull back faces (they have zero importance anyway)
         0xFF,
         origin,
         t_min,
@@ -553,6 +619,7 @@ void main() {
             nee_pdf += computeNeePdf(
                 origin,
                 normal,
+                direction,
                 instance_id,
                 primitive_id,
                 barycentric_coords

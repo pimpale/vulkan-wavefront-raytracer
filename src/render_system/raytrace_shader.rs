@@ -46,6 +46,8 @@ struct InstanceData {
     uint64_t light_vertex_buffer_addr;
     // points to the device address of the light bvh data for this instance
     uint64_t bvh_node_buffer_addr;
+    // the offset of the bottom level light bvh in the top level bvh
+    uint light_bvh_tl_idx;
     // the transform of this instance
     mat4x3 transform;
 };

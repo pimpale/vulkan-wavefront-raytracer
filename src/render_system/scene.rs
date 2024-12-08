@@ -258,6 +258,7 @@ where
                                 }
                                 None => 0,
                             },
+                            light_bvh_tl_idx: 0,
                             vertex_buffer_addr: vertex_buffer.device_address().unwrap().get(),
                         },
                     )
