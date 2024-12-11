@@ -98,6 +98,7 @@ layout(set = 1, binding = 11) writeonly buffer OutputsDebugInfo {
 
 
 layout(push_constant, scalar) uniform PushConstants {
+    uint bounce;
     uint nee_type;
     uint bounce_seed;
     uint xsize;
@@ -747,7 +748,7 @@ void main() {
         // try traversing the bvh
         BvhTraverseResult result;
         
-        if(nee_type == 1 || nee_type == 2) {
+        if(nee_type == 1 || (nee_type == 2 && bounce == 0)) {
             result = traverseBvh(new_origin, ics.normal, murmur3_combine(seed, 2));
         }
         

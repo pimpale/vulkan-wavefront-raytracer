@@ -872,6 +872,7 @@ impl Renderer {
                     0,
                     raytrace_shader::PushConstants {
                         nee_type: rendering_preferences.nee_type,
+                        bounce: bounce,
                         xsize: rt_extent[0],
                         ysize: rt_extent[1],
                         bounce_seed: self.frame_count * self.num_bounces + bounce,
