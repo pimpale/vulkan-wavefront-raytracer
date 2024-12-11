@@ -278,13 +278,10 @@ VisibleTriangles splitIntoVisibleTriangles(vec3 point, vec3 normal, vec3[3] tri)
 
 // returns the area of the triangle that is visible from the point in the direction of the normal
 float getVisibleTriangleArea(VisibleTriangles vt) {
-    if(vt.num_visible == 1) {
-        return 0.5*length(cross(vt.tri0[1] - vt.tri0[0], vt.tri0[2] - vt.tri0[0]));
-    } else if(vt.num_visible == 2) {
-        return 0.5*length(cross(vt.tri0[1] - vt.tri0[0], vt.tri0[2] - vt.tri0[0])) + 0.5*length(cross(vt.tri1[1] - vt.tri1[0], vt.tri1[2] - vt.tri1[0]));
-    } else {
-        return 0.0;
-    }
+    float area = 0.0;
+    area += float(vt.num_visible >= 1)*0.5*length(cross(vt.tri0[1] - vt.tri0[0], vt.tri0[2] - vt.tri0[0]));
+    area += float(vt.num_visible == 2)*0.5*length(cross(vt.tri1[1] - vt.tri1[0], vt.tri1[2] - vt.tri1[0]));
+    return area;
 }
 
 vec3[3] triangleTransform(mat4x3 transform, vec3[3] tri) {
@@ -311,14 +308,14 @@ float triangleRadiusSquared(vec3 center, vec3[3] tri) {
 
 // returns true if any part of the rect is visible from the point in the direction of the normal
 bool rectIsVisible(vec3 point, vec3 normal, vec3[4] rect) {
+    uint visible = 0;
     for(uint i = 0; i < 4; i++) {
         vec3 to_v = rect[i] - point;
-        if(dot(to_v, normal) >= EPSILON_BLOCK) {
-            return true;
-        }
+        visible |= uint(dot(to_v, normal) >= EPSILON_BLOCK);
     }
-    return false;
+    return bool(visible);
 }
+
 
 // gets the importance of a node relative to a point on a surface, specialized for leaf nodes
 float nodeImportance(bool topLevel, vec3 point, vec3 normal, mat4x3 transform, BvhNode node) {
@@ -532,25 +529,6 @@ BvhTraverseResult traverseBvh(vec3 point, vec3 normal, uint seed) {
     }
 }
 
-
-vec3 debugPrim(uint instance_index, uint prim_index) {
-    uint colseed = murmur3_combine(instance_index, prim_index);
-    return normalize(vec3(
-        murmur3_finalizef(murmur3_combine(colseed, 0)),
-        murmur3_finalizef(murmur3_combine(colseed, 1)),
-        murmur3_finalizef(murmur3_combine(colseed, 2))
-    ));
-}
-
-vec3 debugBvh(vec3 point, vec3 normal, uint seed) {
-    BvhTraverseResult result = traverseBvh(point, normal, seed);
-    if(result.success) {
-        return 0.1*result.importance*debugPrim(result.instance_index, result.prim_index);
-    } else {
-        return vec3(-1.0, -1.0, -1.0);
-    }
-}
-
 // returns a vector sampled from the hemisphere with positive y
 // sample is weighted by cosine of angle between sample and y axis
 // https://cseweb.ucsd.edu/classes/sp17/cse168-a/CSE168_08_PathTracing.pdf
@@ -691,7 +669,7 @@ void main() {
     if(info.miss) {
         output_origin[bid] = origin;
         output_direction[bid] = vec3(0.0); // no direction (miss)
-        output_emissivity[bid] = vec3(5.0); // sky color
+        output_emissivity[bid] = vec3(0.0); // sky color
         output_reflectivity[bid] = vec3(0.0);
         output_nee_mis_weight[bid] = 0.0;
         output_bsdf_pdf[bid] = 1.0;
@@ -769,7 +747,7 @@ void main() {
         // try traversing the bvh
         BvhTraverseResult result;
         
-        if(nee_type == 1) {
+        if(nee_type == 1 || nee_type == 2) {
             result = traverseBvh(new_origin, ics.normal, murmur3_combine(seed, 2));
         }
         
@@ -778,7 +756,7 @@ void main() {
         if(result.success && result.importance > 0.0) {
             // chance of picking the light if our bvh traversal was successful
             // light_pdf_mis_weight = clamp(result.importance / 10.0, 0.0, 0.5);
-            light_pdf_mis_weight = 0.5;
+            light_pdf_mis_weight = 0.9;
         }
 
         // randomly choose whether or not to sample the light

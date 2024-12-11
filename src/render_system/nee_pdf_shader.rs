@@ -222,13 +222,10 @@ VisibleTriangles splitIntoVisibleTriangles(vec3 point, vec3 normal, vec3[3] tri)
 
 // returns the area of the triangle that is visible from the point in the direction of the normal
 float getVisibleTriangleArea(VisibleTriangles vt) {
-    if(vt.num_visible == 1) {
-        return 0.5*length(cross(vt.tri0[1] - vt.tri0[0], vt.tri0[2] - vt.tri0[0]));
-    } else if(vt.num_visible == 2) {
-        return 0.5*length(cross(vt.tri0[1] - vt.tri0[0], vt.tri0[2] - vt.tri0[0])) + 0.5*length(cross(vt.tri1[1] - vt.tri1[0], vt.tri1[2] - vt.tri1[0]));
-    } else {
-        return 0.0;
-    }
+    float area = 0.0;
+    area += float(vt.num_visible >= 1)*0.5*length(cross(vt.tri0[1] - vt.tri0[0], vt.tri0[2] - vt.tri0[0]));
+    area += float(vt.num_visible == 2)*0.5*length(cross(vt.tri1[1] - vt.tri1[0], vt.tri1[2] - vt.tri1[0]));
+    return area;
 }
 
 vec3[3] triangleTransform(mat4x3 transform, vec3[3] tri) {
@@ -255,13 +252,12 @@ float triangleRadiusSquared(vec3 center, vec3[3] tri) {
 
 // returns true if any part of the rect is visible from the point in the direction of the normal
 bool rectIsVisible(vec3 point, vec3 normal, vec3[4] rect) {
+    uint visible = 0;
     for(uint i = 0; i < 4; i++) {
         vec3 to_v = rect[i] - point;
-        if(dot(to_v, normal) >= EPSILON_BLOCK) {
-            return true;
-        }
+        visible |= uint(dot(to_v, normal) >= EPSILON_BLOCK);
     }
-    return false;
+    return bool(visible);
 }
 
 // gets the importance of a node relative to a point on a surface, specialized for leaf nodes

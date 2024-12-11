@@ -99,6 +99,7 @@ impl Manager for EgoControlsManager {
             let mut current_prefs = camera.rendering_preferences();
             current_prefs.nee_type = match current_prefs.nee_type {
                 0 => 1,
+                1 => 2,
                 _ => 0,
             };
             dbg!(current_prefs.nee_type);
