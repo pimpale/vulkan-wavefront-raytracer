@@ -160,10 +160,6 @@ vec3[3] triangleTransform(mat4x3 transform, vec3[3] tri) {
     );
 }
 
-vec3 triangleCenter(vec3[3] tri) {
-    return (tri[0] + tri[1] + tri[2]) / 3.0;
-}
-
 float triangleRadiusSquared(vec3 center, vec3[3] tri) {
     return max(
         max(
@@ -197,49 +193,6 @@ float nodeImportance(bool topLevel, vec3 point, vec3 normal, mat4x3 transform, B
     );
 
     return node.luminance / distance_sq;
- 
-    // else {
-    //     // untransformed triangle
-    //     vec3[3] tri_r = vec3[3](
-    //         node.min_or_v0,
-    //         node.max_or_v1,
-    //         vec3(
-    //             node.left_luminance_or_v2_1,
-    //             node.right_luminance_or_v2_2,
-    //             node.down_luminance_or_v2_3
-    //         )
-    //     );
-    //     // transformed triangle visible to us
-    //     vec3[3] tri = triangleTransform(transform, tri_r);
-    //     VisibleTriangles vt = splitIntoVisibleTriangles(point, normal, tri);
-    //     if(vt.num_visible == 0) {
-    //         return 0.0;
-    //     }
-
-    //     vec3 tri_centroid = vt.num_visible == 1 
-    //         ? triangleCenter(vt.tri0)
-    //         : 0.5*(triangleCenter(vt.tri0) + triangleCenter(vt.tri1));
-
-    //     vec3 tri_normal = normalize(cross(tri[1] - tri[0], tri[2] - tri[0]));
-
-    //     // get total luminance of the triangle
-    //     float emitted_light = getVisibleTriangleArea(vt)*node.up_luminance_or_prim_luminance;
-        
-    //     // https://en.wikipedia.org/wiki/View_factor
-    //     float dist_to_tri = length(point - tri_centroid);
-    //     float cos_theta_tri = dot(tri_normal, point-tri_centroid)/dist_to_tri;
-    //     float cost_theta_surf = dot(normal, tri_centroid-point)/dist_to_tri;
-    //     if (cost_theta_surf < 0.0 || cos_theta_tri < 0.0) {
-    //         return 0.0;
-    //     }
-
-    //     float min_distance_sq = triangleRadiusSquared(tri_centroid, tri);
-    //     float distance_sq = max(dist_to_tri*dist_to_tri, min_distance_sq);
-        
-    //     float visibility_coefficient = cos_theta_tri*cost_theta_surf;
-
-    //     return emitted_light*visibility_coefficient / distance_sq;
-    // }
 }
 
 struct BvhTraverseResult {
@@ -302,15 +255,7 @@ BvhTraverseResult traverseBvh(vec3 point, vec3 normal, uint seed) {
         float left_importance_normalized = left_importance / total_importance;
         float right_importance_normalized = right_importance / total_importance;
 
-        if (total_importance == 0.0) {
-            return BvhTraverseResult(
-                false,
-                0,
-                0,
-                probability,
-                0.0
-            );
-        } else if(murmur3_finalizef(seed) < left_importance_normalized) {
+        if(murmur3_finalizef(seed) < left_importance_normalized) {
             node = left;
             probability *= left_importance_normalized;
             importance = left_importance;
@@ -533,7 +478,7 @@ void main() {
         // otherwise, the chance is proportional to the importance of our pick
         if(result.success && result.importance > 0.0) {
             // chance of picking the light if our bvh traversal was successful
-            // light_pdf_mis_weight = clamp(result.importance / 10.0, 0.0, 0.5);
+            light_pdf_mis_weight = clamp(result.importance / 10.0, 0.0, 0.5);
             light_pdf_mis_weight = 0.9;
         }
 
@@ -595,7 +540,7 @@ void main() {
     output_normal[bid] = ics.normal;
     output_emissivity[bid] = emissivity;
     output_reflectivity[bid] = reflectivity;
-    output_nee_mis_weight[bid] = 0.0; //light_pdf_mis_weight;
+    output_nee_mis_weight[bid] = light_pdf_mis_weight;
     output_bsdf_pdf[bid] = bsdf_pdf;
     output_debug_info[bid] = vec4(0.0);
 }
