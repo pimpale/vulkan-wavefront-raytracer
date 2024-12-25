@@ -508,7 +508,7 @@ impl Renderer {
         .unwrap();
 
         let mut renderer = Renderer {
-            scale: 1,
+            scale: 2,
             num_bounces: 2,
             surface,
             command_buffer_allocator,

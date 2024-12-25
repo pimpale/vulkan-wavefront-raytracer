@@ -30,7 +30,7 @@ layout(buffer_reference, buffer_reference_align=4, scalar) readonly buffer BvhNo
     uint right_node_idx_or_prim_idx;
     vec3 min;
     vec3 max;
-    float luminance;
+    float power;
     uint parent_node_idx;
 };
 
@@ -192,7 +192,7 @@ float nodeImportance(bool topLevel, vec3 point, vec3 normal, mat4x3 transform, B
         lengthSquared(0.5*(v000 + v111) - point)
     );
 
-    return node.luminance / distance_sq;
+    return node.power / distance_sq;
 }
 
 struct BvhTraverseResult {

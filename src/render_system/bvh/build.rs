@@ -319,7 +319,7 @@ pub fn build_bl_bvh(
                     right_node_idx_or_prim_idx: prim_index_ids[prim_idx] as u32,
                     min: aabb.min().coords.into(),
                     max: aabb.max().coords.into(),
-                    luminance: prim_luminances[prim_idx],
+                    power: prim_luminances[prim_idx],
                     parent_idx: leaf.parent_idx as u32,
                     ..Default::default()
                 }
@@ -351,7 +351,7 @@ pub fn build_bl_bvh(
             // process children
             for child_idx in [left_child_idx, right_child_idx] {
                 let child = &opt_bvh[child_idx].clone();
-                opt_bvh[i].luminance += child.luminance;
+                opt_bvh[i].power += child.power;
             }
         }
     }
@@ -366,7 +366,7 @@ pub fn build_bl_bvh(
             max: opt_bvh[0].max.into(),
         };
 
-        let luminance = opt_bvh[0].luminance;
+        let luminance = opt_bvh[0].power;
         (opt_bvh, aabb, luminance)
     }
 }
@@ -377,12 +377,12 @@ pub fn build_tl_bvh(
     // the bounding box of each primitive
     prim_aabbs: &[Aabb],
     // how much power is in each primitive
-    prim_luminances: &[f32],
+    prim_power_values: &[f32],
     // instance id of each bl bvh
     prim_index_ids: &[u32],
 ) -> Vec<BvhNode> {
     let n_prims = prim_aabbs.len();
-    assert_eq!(n_prims, prim_luminances.len());
+    assert_eq!(n_prims, prim_power_values.len());
     assert_eq!(n_prims, prim_index_ids.len());
     assert_eq!(n_prims, prim_isometries.len());
 
@@ -443,7 +443,7 @@ pub fn build_tl_bvh(
                     right_node_idx_or_prim_idx: prim_index_ids[prim_idx] as u32,
                     min: prim_aabbs[prim_idx].min().coords.into(),
                     max: prim_aabbs[prim_idx].max().coords.into(),
-                    luminance: prim_luminances[prim_idx],
+                    power: prim_power_values[prim_idx],
                     parent_idx: leaf.parent_idx as u32,
                 }
             }
@@ -458,9 +458,9 @@ pub fn build_tl_bvh(
         })
         .collect::<Vec<_>>();
 
-    // compute luminance values for non-leaf nodes
-    // the luminance of a node is the sum of the luminance of its children
-    // the luminance of a leaf node is the luminance of the primitive it contains
+    // compute power values for non-leaf nodes
+    // the power of a node is the sum of the power of its children
+    // the power of a leaf node is the power of the primitive it contains
 
     // the list is topologically sorted so we can just iterate over it in reverse order, and be sure that all the children of a node have already been processed
     for i in (0..opt_bvh.len()).rev() {
@@ -471,7 +471,7 @@ pub fn build_tl_bvh(
 
             // process children
             for child in [left_child, right_child] {
-                opt_bvh[i].luminance += child.luminance;
+                opt_bvh[i].power += child.power;
             }
         }
     }

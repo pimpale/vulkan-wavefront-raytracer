@@ -18,8 +18,8 @@ pub struct BvhNode {
     pub min: [f32; 3],
     // the max bound
     pub max: [f32; 3],
-    // the luminance of entire object
-    pub luminance: f32,
+    // the power emitted by the entire object
+    pub power: f32,
     pub parent_idx: u32,
 }
 
@@ -30,7 +30,7 @@ impl Default for BvhNode {
             right_node_idx_or_prim_idx: 0xFFFFFFFF,
             min: [0.0; 3],
             max: [0.0; 3],
-            luminance: 0.0,
+            power: 0.0,
             parent_idx: 0xFFFFFFFF,
         }
     }
