@@ -478,8 +478,12 @@ void main() {
         // otherwise, the chance is proportional to the importance of our pick
         if(result.success && result.importance > 0.0) {
             // chance of picking the light if our bvh traversal was successful
-            light_pdf_mis_weight = clamp(result.importance / 10.0, 0.0, 0.5);
-            light_pdf_mis_weight = 0.9;
+            // light_pdf_mis_weight = clamp(result.importance / 10.0, 0.0, 0.5);
+            if(nee_type == 1) {
+                light_pdf_mis_weight = 0.3;
+            } else if(nee_type == 2) {
+                light_pdf_mis_weight = 0.9;
+            }
         }
 
         // randomly choose whether or not to sample the light

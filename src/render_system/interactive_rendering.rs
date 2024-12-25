@@ -162,7 +162,7 @@ fn create_swapchain(
         device.clone(),
         surface.clone(),
         SwapchainCreateInfo {
-            min_image_count: 3,
+            min_image_count: 4,
             image_format: Format::B8G8R8A8_SRGB,
             image_extent: window.inner_size().into(),
             image_usage: ImageUsage::TRANSFER_DST,
@@ -509,7 +509,7 @@ impl Renderer {
 
         let mut renderer = Renderer {
             scale: 1,
-            num_bounces: 4,
+            num_bounces: 2,
             surface,
             command_buffer_allocator,
             previous_frame_end: Some(sync::now(device.clone()).boxed()),
