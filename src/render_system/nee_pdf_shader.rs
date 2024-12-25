@@ -12,7 +12,7 @@ vulkano_shaders::shader! {
 #extension GL_EXT_nonuniform_qualifier: require
 
 #define M_PI 3.1415926535897932384626433832795
-#define EPSILON_BLOCK 0.001
+#define EPSILON_BLOCK 0.0001
 
 layout(local_size_x = 32, local_size_y = 32, local_size_z = 1) in;
 

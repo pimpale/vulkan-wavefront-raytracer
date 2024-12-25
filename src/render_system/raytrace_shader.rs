@@ -392,7 +392,7 @@ void main() {
     if(info.miss) {
         output_origin[bid] = origin;
         output_direction[bid] = vec3(0.0); // no direction (miss)
-        output_emissivity[bid] = vec3(0.0); // sky color
+        output_emissivity[bid] = vec3(20.0); // sky color
         output_reflectivity[bid] = vec3(0.0);
         output_nee_mis_weight[bid] = 0.0;
         output_bsdf_pdf[bid] = 1.0;
@@ -465,7 +465,7 @@ void main() {
         bsdf_pdf = 1.0;
     } else {
         // offset origin slightly to avoid self intersection
-        new_origin += EPSILON_BLOCK*2 * ics.normal;
+        new_origin += EPSILON_BLOCK*1.5 * ics.normal;
 
 
         // lambertian scattering
@@ -484,7 +484,7 @@ void main() {
             // chance of picking the light if our bvh traversal was successful
             // light_pdf_mis_weight = clamp(result.importance / 10.0, 0.0, 0.5);
             // if(nee_type == 1) {
-                light_pdf_mis_weight = 0.3;
+                light_pdf_mis_weight = 0.9;
             // } else if(nee_type == 2) {
             //     light_pdf_mis_weight = 0.9;
             // }
