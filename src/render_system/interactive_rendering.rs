@@ -509,7 +509,7 @@ impl Renderer {
 
         let mut renderer = Renderer {
             scale: 1,
-            num_bounces: 4,
+            num_bounces: 2,
             surface,
             command_buffer_allocator,
             previous_frame_end: Some(sync::now(device.clone()).boxed()),
@@ -1040,7 +1040,7 @@ impl Renderer {
                 accumulate_shader::PushConstants {
                     debug_view: rendering_preferences.debug_view,
                     frame: self.frame_count,
-                    scale: self.scale,
+                    srcscale: self.scale,
                     num_bounces: self.num_bounces,
                     xsize: extent[0],
                     ysize: extent[1],

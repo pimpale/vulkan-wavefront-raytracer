@@ -28,14 +28,9 @@ layout(buffer_reference, buffer_reference_align=4, scalar) readonly buffer Verte
 layout(buffer_reference, buffer_reference_align=4, scalar) readonly buffer BvhNode {
     uint left_node_idx;
     uint right_node_idx_or_prim_idx;
-    vec3 min_or_v0;
-    vec3 max_or_v1;
-    float left_luminance_or_v2_1;
-    float right_luminance_or_v2_2;
-    float down_luminance_or_v2_3;
-    float up_luminance_or_prim_luminance;
-    float back_luminance;
-    float front_luminance;
+    vec3 min;
+    vec3 max;
+    float luminance;
     uint parent_node_idx;
 };
 
@@ -157,134 +152,6 @@ float lengthSquared(vec3 v) {
     return dot(v, v);
 }
 
-struct VisibleTriangles {
-    uint num_visible;
-    vec3[3] tri0;
-    vec3[3] tri1;
-};
-
-
-vec3 line_plane_intersection(vec3 line_point, vec3 line_direction, vec3 plane_point, vec3 plane_normal) {
-    float t = dot(plane_normal, line_point - plane_point) / dot(-line_direction, plane_normal);
-    return line_point + t * line_direction;
-}
-
-// returns anywhere between 0 and 2 triangles, all of which are visible from the point in the direction of the normal
-VisibleTriangles splitIntoVisibleTriangles(vec3 point, vec3 normal, vec3[3] tri) {
-    vec3[3] tri_sorted = tri;
-
-    // sort 3 vertices by cosine of angle between vertex and normal
-    float cos0 = dot(tri_sorted[0]-point, normal);
-    float cos1 = dot(tri_sorted[1]-point, normal);
-    float cos2 = dot(tri_sorted[2]-point, normal);
-
-    if(cos0 > cos2) {
-        vec3 tmp = tri_sorted[0];
-        tri_sorted[0] = tri_sorted[2];
-        tri_sorted[2] = tmp;
-        float tmp2 = cos0;
-        cos0 = cos2;
-        cos2 = tmp2;
-    }
-
-    if(cos0 > cos1) {
-        vec3 tmp = tri_sorted[0];
-        tri_sorted[0] = tri_sorted[1];
-        tri_sorted[1] = tmp;
-        float tmp2 = cos0;
-        cos0 = cos1;
-        cos1 = tmp2;
-    }
-
-    if(cos1 > cos2) {
-        vec3 tmp = tri_sorted[1];
-        tri_sorted[1] = tri_sorted[2];
-        tri_sorted[2] = tmp;
-        float tmp2 = cos1;
-        cos1 = cos2;
-        cos2 = tmp2;
-    }
-
-    vec3[3] null_tri = vec3[3](vec3(0.0), vec3(0.0), vec3(0.0));
-
-    if(dot(tri_sorted[2]-point, normal) <= 0) {
-        // none of the triangle's vertices are visible 
-        return VisibleTriangles(0, null_tri, null_tri);
-    } else if(dot(tri_sorted[1]-point, normal) <= 0) {
-        // only one of the triangle's vertices (vertex 2) is visible
-        // we can now construct a new triangle that is guaranteed to be visible by finding
-        // the intersection of v2->v1 with the normal plane (new_v0)
-        // and the intersection of v2->v0 with the normal plane (new_v1)
-
-        // for the line plane intersection test, we would normally need to check if the determinant of the matrix
-        // formed by the vectors is zero, but we know that the normal is not parallel to the plane, so we can skip that check
-
-        vec3[3] tri0 = vec3[3](
-            line_plane_intersection(
-                tri_sorted[2],
-                tri_sorted[1] - tri_sorted[2],
-                point,
-                normal
-            ),
-            line_plane_intersection(
-                tri_sorted[2],
-                tri_sorted[0] - tri_sorted[2],
-                point,
-                normal
-            ),
-            tri_sorted[2]
-        );
-        return VisibleTriangles(1, tri0, null_tri);
-    } else if(dot(tri_sorted[0] - point, normal) <= 0) {
-        // two of the triangle's vertices are visible
-        
-        // in this case we have two visible triangles:
-        // the triangle formed by v2, v1, and the intersection of v2->v0 with the normal plane
-        // and the triangle formed by v2, the intersection of v2->v0 with the normal plane, and the intersection of v1->v0 with the normal plane
-        
-        vec3[3] tri0 = vec3[3](
-            tri_sorted[2],
-            tri_sorted[1],
-            line_plane_intersection(
-                tri_sorted[2],
-                tri_sorted[0] - tri_sorted[2],
-                point,
-                normal
-            )
-        );
-
-        vec3[3] tri1 = vec3[3](
-            tri_sorted[2],
-            line_plane_intersection(
-                tri_sorted[2],
-                tri_sorted[0] - tri_sorted[2],
-                point,
-                normal
-            ),
-            line_plane_intersection(
-                tri_sorted[1],
-                tri_sorted[0] - tri_sorted[1],
-                point,
-                normal
-            )
-        );
-        
-        return VisibleTriangles(2, tri0, tri1);
-    } else {
-        // all of the triangle's vertices are visible
-        // so return the original triangle
-        return VisibleTriangles(1, tri, null_tri);
-    }
-}
-
-// returns the area of the triangle that is visible from the point in the direction of the normal
-float getVisibleTriangleArea(VisibleTriangles vt) {
-    float area = 0.0;
-    area += float(vt.num_visible >= 1)*0.5*length(cross(vt.tri0[1] - vt.tri0[0], vt.tri0[2] - vt.tri0[0]));
-    area += float(vt.num_visible == 2)*0.5*length(cross(vt.tri1[1] - vt.tri1[0], vt.tri1[2] - vt.tri1[0]));
-    return area;
-}
-
 vec3[3] triangleTransform(mat4x3 transform, vec3[3] tri) {
     return vec3[3](
         transform * vec4(tri[0], 1.0),
@@ -320,133 +187,59 @@ bool rectIsVisible(vec3 point, vec3 normal, vec3[4] rect) {
 
 // gets the importance of a node relative to a point on a surface, specialized for leaf nodes
 float nodeImportance(bool topLevel, vec3 point, vec3 normal, mat4x3 transform, BvhNode node) {
-    // replace node with lower level node to get better bounds
-    if(topLevel && node.left_node_idx == 0xFFFFFFFF) {
-        InstanceData id = instance_data[node.right_node_idx_or_prim_idx];
-        transform = id.transform;
-        topLevel = false;
-        node = BvhNode(id.bvh_node_buffer_addr);
-    }
-    
-    if(topLevel || node.left_node_idx != 0xFFFFFFFF) {
-        // get corners
-        vec3 v000 = transform * vec4(node.min_or_v0, 1.0);
-        vec3 v111 = transform * vec4(node.max_or_v1, 1.0);
-        vec3 v001 = vec3(v000.x, v000.y, v111.z);
-        vec3 v010 = vec3(v000.x, v111.y, v000.z);
-        vec3 v011 = vec3(v000.x, v111.y, v111.z);
-        vec3 v100 = vec3(v111.x, v000.y, v000.z);
-        vec3 v101 = vec3(v111.x, v000.y, v111.z);
-        vec3 v110 = vec3(v111.x, v111.y, v000.z);
+    // get corners
+    vec3 v000 = transform * vec4(node.min, 1.0);
+    vec3 v111 = transform * vec4(node.max, 1.0);
 
-        float distance_sq = max(
-            lengthSquared(v111 - v000),
-            lengthSquared(0.5*(v000 + v111) - point)
-        );
+    float distance_sq = max(
+        lengthSquared(v111 - v000),
+        lengthSquared(0.5*(v000 + v111) - point)
+    );
 
-        float luminance = 0.0;
+    return node.luminance / distance_sq;
+ 
+    // else {
+    //     // untransformed triangle
+    //     vec3[3] tri_r = vec3[3](
+    //         node.min_or_v0,
+    //         node.max_or_v1,
+    //         vec3(
+    //             node.left_luminance_or_v2_1,
+    //             node.right_luminance_or_v2_2,
+    //             node.down_luminance_or_v2_3
+    //         )
+    //     );
+    //     // transformed triangle visible to us
+    //     vec3[3] tri = triangleTransform(transform, tri_r);
+    //     VisibleTriangles vt = splitIntoVisibleTriangles(point, normal, tri);
+    //     if(vt.num_visible == 0) {
+    //         return 0.0;
+    //     }
+
+    //     vec3 tri_centroid = vt.num_visible == 1 
+    //         ? triangleCenter(vt.tri0)
+    //         : 0.5*(triangleCenter(vt.tri0) + triangleCenter(vt.tri1));
+
+    //     vec3 tri_normal = normalize(cross(tri[1] - tri[0], tri[2] - tri[0]));
+
+    //     // get total luminance of the triangle
+    //     float emitted_light = getVisibleTriangleArea(vt)*node.up_luminance_or_prim_luminance;
         
-        vec3 lv = v000 - v100;
-        luminance +=
-            // light contained in this part of the node
-            node.left_luminance_or_v2_1
-            // clamped scalar projection of point onto x axis (to reduce estimate if we are inside the node)
-            * clamp(dot(point - v100, lv)/lengthSquared(lv), 0.0, 1.0)
-            // very rough approximation of cos theta1
-            * float(rectIsVisible(point, normal, vec3[4](v100, v101, v111, v110)));
-            // // cos theta2
-            // * max(0.0, dot(normalize(point - v100), normalize(lv)));
+    //     // https://en.wikipedia.org/wiki/View_factor
+    //     float dist_to_tri = length(point - tri_centroid);
+    //     float cos_theta_tri = dot(tri_normal, point-tri_centroid)/dist_to_tri;
+    //     float cost_theta_surf = dot(normal, tri_centroid-point)/dist_to_tri;
+    //     if (cost_theta_surf < 0.0 || cos_theta_tri < 0.0) {
+    //         return 0.0;
+    //     }
 
-        vec3 rv = v100 - v000;
-        luminance +=
-            node.right_luminance_or_v2_2 
-            * clamp(dot(point - v000, rv)/lengthSquared(rv), 0.0, 1.0)
-            // cos theta1
-            * float(rectIsVisible(point, normal, vec3[4](v000, v001, v011, v010)));
-            // // cos theta2
-            // * max(0.0, dot(normalize(point - v000), normalize(rv)));
+    //     float min_distance_sq = triangleRadiusSquared(tri_centroid, tri);
+    //     float distance_sq = max(dist_to_tri*dist_to_tri, min_distance_sq);
         
-        vec3 dv = v000 - v010;
-        luminance +=
-            node.down_luminance_or_v2_3 
-            * clamp(dot(point - v010, dv)/lengthSquared(dv), 0.0, 1.0)
-            // cos theta1
-            * float(rectIsVisible(point, normal, vec3[4](v010, v011, v111, v110)));
-            // // cos theta2
-            // * max(0.0, dot(normalize(point - v010), normalize(dv)));
+    //     float visibility_coefficient = cos_theta_tri*cost_theta_surf;
 
-        vec3 uv = v010 - v000;
-        luminance +=
-            node.up_luminance_or_prim_luminance
-            * clamp(dot(point - v000, uv)/lengthSquared(uv), 0.0, 1.0)
-            // cos theta1
-            * float(rectIsVisible(point, normal, vec3[4](v000, v001, v101, v100)));
-            // // cos theta2
-            // * max(0.0, dot(normalize(point - v000), normalize(uv)));
-
-        vec3 bv = v000 - v001;
-        luminance +=
-            node.back_luminance
-            * clamp(dot(point - v001, bv)/lengthSquared(bv), 0.0, 1.0)
-            // cos theta1
-            * float(rectIsVisible(point, normal, vec3[4](v001, v011, v111, v101)));
-            // // cos theta2
-            // * max(0.0, dot(normalize(point - v001), normalize(bv)));
-
-
-        vec3 fv = v001 - v000;
-        luminance +=
-            node.front_luminance
-            * clamp(dot(point - v000, fv)/lengthSquared(fv), 0.0, 1.0)
-            // cos theta1
-            * float(rectIsVisible(point, normal, vec3[4](v000, v010, v110, v100)));
-            // // cos theta2
-            // * max(0.0, dot(normalize(point - v000), normalize(fv)));
-
-
-        return luminance / distance_sq;
-    } else {
-        // untransformed triangle
-        vec3[3] tri_r = vec3[3](
-            node.min_or_v0,
-            node.max_or_v1,
-            vec3(
-                node.left_luminance_or_v2_1,
-                node.right_luminance_or_v2_2,
-                node.down_luminance_or_v2_3
-            )
-        );
-        // transformed triangle visible to us
-        vec3[3] tri = triangleTransform(transform, tri_r);
-        VisibleTriangles vt = splitIntoVisibleTriangles(point, normal, tri);
-        if(vt.num_visible == 0) {
-            return 0.0;
-        }
-
-        vec3 tri_centroid = vt.num_visible == 1 
-            ? triangleCenter(vt.tri0)
-            : 0.5*(triangleCenter(vt.tri0) + triangleCenter(vt.tri1));
-
-        vec3 tri_normal = normalize(cross(tri[1] - tri[0], tri[2] - tri[0]));
-
-        // get total luminance of the triangle
-        float emitted_light = getVisibleTriangleArea(vt)*node.up_luminance_or_prim_luminance;
-        
-        // https://en.wikipedia.org/wiki/View_factor
-        float dist_to_tri = length(point - tri_centroid);
-        float cos_theta_tri = dot(tri_normal, point-tri_centroid)/dist_to_tri;
-        float cost_theta_surf = dot(normal, tri_centroid-point)/dist_to_tri;
-        if (cost_theta_surf < 0.0 || cos_theta_tri < 0.0) {
-            return 0.0;
-        }
-
-        float min_distance_sq = triangleRadiusSquared(tri_centroid, tri);
-        float distance_sq = max(dist_to_tri*dist_to_tri, min_distance_sq);
-        
-        float visibility_coefficient = cos_theta_tri*cost_theta_surf;
-
-        return emitted_light*visibility_coefficient / distance_sq;
-    }
+    //     return emitted_light*visibility_coefficient / distance_sq;
+    // }
 }
 
 struct BvhTraverseResult {
@@ -549,22 +342,6 @@ vec3 triangleSample(vec2 uv, vec3[3] tri) {
     }
     vec3 bary = vec3(1.0 - uv.x - uv.y, uv.x, uv.y);
     return bary.x * tri[0] + bary.y * tri[1] + bary.z * tri[2];
-}
-
-// there must be at least 1 visible triangle
-vec3 visibleTriangleSample(vec3 tuv, VisibleTriangles vt) {
-    if(vt.num_visible == 1) {
-        return triangleSample(tuv.xy, vt.tri0);
-    } else {
-        float area1 = 0.5*length(cross(vt.tri0[1] - vt.tri0[0], vt.tri0[2] - vt.tri0[0]));
-        float area2 = 0.5*length(cross(vt.tri1[1] - vt.tri1[0], vt.tri1[2] - vt.tri1[0]));
-        float total_area = area1 + area2;
-        if(tuv.x < area1/total_area) {
-            return triangleSample(tuv.yz, vt.tri0);
-        } else {
-            return triangleSample(tuv.yz, vt.tri1);
-        }
-    }
 }
 
 struct IntersectionCoordinateSystem {
@@ -781,15 +558,14 @@ void main() {
             vec3[3] tri_light = triangleTransform(id_light.transform, tri_light_r);
                         
             // sample a point on the light
-            vec3 tuv_light = vec3(
+            vec2 uv_light = vec2(
                 murmur3_finalizef(murmur3_combine(seed, 4)),
-                murmur3_finalizef(murmur3_combine(seed, 5)),
-                murmur3_finalizef(murmur3_combine(seed, 6))
+                murmur3_finalizef(murmur3_combine(seed, 5))
             );
 
-            vec3 sampled_light_point = visibleTriangleSample(
-                tuv_light, 
-                splitIntoVisibleTriangles(new_origin, ics.normal, tri_light)
+            vec3 sampled_light_point = triangleSample(
+                uv_light, 
+                tri_light
             );
 
             new_direction = normalize(sampled_light_point - new_origin);
@@ -819,7 +595,7 @@ void main() {
     output_normal[bid] = ics.normal;
     output_emissivity[bid] = emissivity;
     output_reflectivity[bid] = reflectivity;
-    output_nee_mis_weight[bid] = light_pdf_mis_weight;
+    output_nee_mis_weight[bid] = 0.0; //light_pdf_mis_weight;
     output_bsdf_pdf[bid] = bsdf_pdf;
     output_debug_info[bid] = vec4(0.0);
 }

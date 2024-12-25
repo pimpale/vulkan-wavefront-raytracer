@@ -50,7 +50,7 @@ layout(push_constant, scalar) uniform PushConstants {
     uint debug_view;
     uint frame;
     uint num_bounces;
-    uint scale;
+    uint srcscale;
     uint xsize;
     uint ysize;
 };
@@ -59,14 +59,14 @@ void main() {
     if(gl_GlobalInvocationID.x >= xsize || gl_GlobalInvocationID.y >= ysize) {
         return;
     }
-    const uint srcxsize = xsize * scale;
-    const uint srcysize = ysize * scale;
+    const uint srcxsize = xsize * srcscale;
+    const uint srcysize = ysize * srcscale;
 
     vec3 color = vec3(0.0);
-    for (uint scaley = 0; scaley < scale; scaley++) {
-        const uint srcy = gl_GlobalInvocationID.y * scale + scaley;
-        for(uint scalex = 0; scalex < scale; scalex++) {
-            const uint srcx = gl_GlobalInvocationID.x * scale + scalex;
+    for (uint scaley = 0; scaley < srcscale; scaley++) {
+        const uint srcy = gl_GlobalInvocationID.y * srcscale + scaley;
+        for(uint scalex = 0; scalex < srcscale; scalex++) {
+            const uint srcx = gl_GlobalInvocationID.x * srcscale + scalex;
             // compute the color for this sample
             vec3 sample_color = vec3(0.0);
             for(int bounce = int(num_bounces)-1; bounce >= 0; bounce--) {            
@@ -105,7 +105,7 @@ void main() {
     }
 
     // average the samples
-    vec3 pixel_color = color / float(scale*scale);
+    vec3 pixel_color = color / float(srcscale*srcscale);
     output_image[gl_GlobalInvocationID.y*xsize + gl_GlobalInvocationID.x] = u8vec4(pixel_color.zyx*255, 255);
 }
 ",

@@ -248,13 +248,13 @@ fn insert_blas_leaf_node(
 
 pub fn build_bl_bvh(
     // the power/area of each primitive
-    prim_luminance_per_area: &[f32],
+    prim_luminances: &[f32],
     // prim triangles
     prim_vertexes: &[Point3<f32>],
     // if this is a bottom level bvh, then this is the primitive index of each primitive
     prim_index_ids: &[u32],
-) -> (Vec<BvhNode>, Aabb, [f32; 6]) {
-    let n_prims = prim_luminance_per_area.len();
+) -> (Vec<BvhNode>, Aabb, f32) {
+    let n_prims = prim_luminances.len();
     assert_eq!(n_prims, prim_index_ids.len());
 
     let mut prim_idxs = (0..n_prims).collect::<Vec<_>>();
@@ -268,24 +268,6 @@ pub fn build_bl_bvh(
         .array_chunks()
         .map(|[v0, v1, v2]| Point3::from((v0.coords + v1.coords + v2.coords) / 3.0))
         .collect::<Vec<_>>();
-
-    let prim_aabb_luminances: Vec<_> = prim_vertexes
-        .array_chunks()
-        .zip(prim_luminance_per_area)
-        .map(|([v0, v1, v2], lum)| {
-            let normal = (v1 - v0).cross(&(v2 - v0));
-            let area = normal.norm() / 2.0;
-            let luminance = lum * area;
-            [
-                luminance * f32::max(-normal.x, 0.0),
-                luminance * f32::max(normal.x, 0.0),
-                luminance * f32::max(-normal.y, 0.0),
-                luminance * f32::max(normal.y, 0.0),
-                luminance * f32::max(-normal.z, 0.0),
-                luminance * f32::max(normal.z, 0.0),
-            ]
-        })
-        .collect();
 
     let mut nodes = vec![];
 
@@ -329,19 +311,15 @@ pub fn build_bl_bvh(
             BuildBvhNodeKind::Leaf(ref leaf) => {
                 assert!(leaf.prim_count == 1);
                 let prim_idx = prim_idxs[leaf.first_prim_idx_idx];
-                let v0 = prim_vertexes[prim_idx * 3 + 0];
-                let v1 = prim_vertexes[prim_idx * 3 + 1];
-                let v2 = prim_vertexes[prim_idx * 3 + 2];
+                let aabb = &prim_aabbs[prim_idx];
+
                 opt_bvh_idx_to_prim_idx.push(Some(prim_idx));
                 BvhNode {
                     left_node_idx: u32::MAX,
                     right_node_idx_or_prim_idx: prim_index_ids[prim_idx] as u32,
-                    min_or_v0: v0.into(),
-                    max_or_v1: v1.into(),
-                    left_luminance_or_v2_1: v2.x,
-                    right_luminance_or_v2_2: v2.y,
-                    down_luminance_or_v2_3: v2.z,
-                    up_luminance_or_prim_luminance: prim_luminance_per_area[prim_idx],
+                    min: aabb.min().coords.into(),
+                    max: aabb.max().coords.into(),
+                    luminance: prim_luminances[prim_idx],
                     parent_idx: leaf.parent_idx as u32,
                     ..Default::default()
                 }
@@ -351,8 +329,8 @@ pub fn build_bl_bvh(
                 BvhNode {
                     left_node_idx: internal_node.left_child_idx as u32,
                     right_node_idx_or_prim_idx: internal_node.right_child_idx as u32,
-                    min_or_v0: (node.aabb.min().coords - padding).into(),
-                    max_or_v1: (node.aabb.max().coords + padding).into(),
+                    min: (node.aabb.min().coords - padding).into(),
+                    max: (node.aabb.max().coords + padding).into(),
                     parent_idx: internal_node.parent_idx as u32,
                     ..Default::default()
                 }
@@ -370,51 +348,25 @@ pub fn build_bl_bvh(
             let left_child_idx = opt_bvh[i].left_node_idx as usize;
             let right_child_idx = opt_bvh[i].right_node_idx_or_prim_idx as usize;
 
-            // process left child
+            // process children
             for child_idx in [left_child_idx, right_child_idx] {
                 let child = &opt_bvh[child_idx].clone();
-                if child.left_node_idx == u32::MAX {
-                    // child is a leaf
-                    let child_aabb_luminance =
-                        prim_aabb_luminances[opt_bvh_idx_to_prim_idx[child_idx].unwrap()];
-                    opt_bvh[i].left_luminance_or_v2_1 += child_aabb_luminance[0];
-                    opt_bvh[i].right_luminance_or_v2_2 += child_aabb_luminance[1];
-                    opt_bvh[i].down_luminance_or_v2_3 += child_aabb_luminance[2];
-                    opt_bvh[i].up_luminance_or_prim_luminance += child_aabb_luminance[3];
-                    opt_bvh[i].back_luminance += child_aabb_luminance[4];
-                    opt_bvh[i].front_luminance += child_aabb_luminance[5];
-                } else {
-                    // child is an internal node
-                    opt_bvh[i].left_luminance_or_v2_1 += child.left_luminance_or_v2_1;
-                    opt_bvh[i].right_luminance_or_v2_2 += child.right_luminance_or_v2_2;
-                    opt_bvh[i].down_luminance_or_v2_3 += child.down_luminance_or_v2_3;
-                    opt_bvh[i].up_luminance_or_prim_luminance +=
-                        child.up_luminance_or_prim_luminance;
-                    opt_bvh[i].back_luminance += child.back_luminance;
-                    opt_bvh[i].front_luminance += child.front_luminance;
-                }
+                opt_bvh[i].luminance += child.luminance;
             }
         }
     }
 
     if opt_bvh[0].left_node_idx == u32::MAX {
         // leaf node
-        (opt_bvh, prim_aabbs[0], prim_aabb_luminances[0])
+        (opt_bvh, prim_aabbs[0], prim_luminances[0])
     } else {
         // not leaf node
         let aabb = Aabb::NonEmpty {
-            min: opt_bvh[0].min_or_v0.into(),
-            max: opt_bvh[0].max_or_v1.into(),
+            min: opt_bvh[0].min.into(),
+            max: opt_bvh[0].max.into(),
         };
 
-        let luminance = [
-            opt_bvh[0].left_luminance_or_v2_1,
-            opt_bvh[0].right_luminance_or_v2_2,
-            opt_bvh[0].down_luminance_or_v2_3,
-            opt_bvh[0].up_luminance_or_prim_luminance,
-            opt_bvh[0].back_luminance,
-            opt_bvh[0].front_luminance,
-        ];
+        let luminance = opt_bvh[0].luminance;
         (opt_bvh, aabb, luminance)
     }
 }
@@ -425,7 +377,7 @@ pub fn build_tl_bvh(
     // the bounding box of each primitive
     prim_aabbs: &[Aabb],
     // how much power is in each primitive
-    prim_luminances: &[[f32; 6]],
+    prim_luminances: &[f32],
     // instance id of each bl bvh
     prim_index_ids: &[u32],
 ) -> Vec<BvhNode> {
@@ -440,58 +392,6 @@ pub fn build_tl_bvh(
         .into_iter()
         .zip(prim_isometries.iter())
         .map(|(aabb, isometry)| aabb.transform(isometry))
-        .collect::<Vec<_>>();
-
-    let prim_luminances = prim_luminances
-        .into_iter()
-        .zip(prim_isometries.iter())
-        .map(|(luminances, isometry)| {
-            let r = isometry.rotation.inverse();
-            let v0 = luminances[0] * (r * vector![-1.0, 0.0, 0.0]);
-            let v1 = luminances[1] * (r * vector![1.0, 0.0, 0.0]);
-            let v2 = luminances[2] * (r * vector![0.0, -1.0, 0.0]);
-            let v3 = luminances[3] * (r * vector![0.0, 1.0, 0.0]);
-            let v4 = luminances[4] * (r * vector![0.0, 0.0, -1.0]);
-            let v5 = luminances[5] * (r * vector![0.0, 0.0, 1.0]);
-            [
-                (-v0.x).max(0.0)
-                    + (-v1.x).max(0.0)
-                    + (-v2.x).max(0.0)
-                    + (-v3.x).max(0.0)
-                    + (-v4.x).max(0.0)
-                    + (-v5.x).max(0.0),
-                v0.x.max(0.0)
-                    + v1.x.max(0.0)
-                    + v2.x.max(0.0)
-                    + v3.x.max(0.0)
-                    + v4.x.max(0.0)
-                    + v5.x.max(0.0),
-                (-v0.y).max(0.0)
-                    + (-v1.y).max(0.0)
-                    + (-v2.y).max(0.0)
-                    + (-v3.y).max(0.0)
-                    + (-v4.y).max(0.0)
-                    + (-v5.y).max(0.0),
-                v0.y.max(0.0)
-                    + v1.y.max(0.0)
-                    + v2.y.max(0.0)
-                    + v3.y.max(0.0)
-                    + v4.y.max(0.0)
-                    + v5.y.max(0.0),
-                (-v0.z).max(0.0)
-                    + (-v1.z).max(0.0)
-                    + (-v2.z).max(0.0)
-                    + (-v3.z).max(0.0)
-                    + (-v4.z).max(0.0)
-                    + (-v5.z).max(0.0),
-                v0.z.max(0.0)
-                    + v1.z.max(0.0)
-                    + v2.z.max(0.0)
-                    + v3.z.max(0.0)
-                    + v4.z.max(0.0)
-                    + v5.z.max(0.0),
-            ]
-        })
         .collect::<Vec<_>>();
 
     let prim_centroids = prim_aabbs
@@ -541,22 +441,17 @@ pub fn build_tl_bvh(
                 BvhNode {
                     left_node_idx: u32::MAX,
                     right_node_idx_or_prim_idx: prim_index_ids[prim_idx] as u32,
-                    min_or_v0: prim_aabbs[prim_idx].min().coords.into(),
-                    max_or_v1: prim_aabbs[prim_idx].max().coords.into(),
-                    left_luminance_or_v2_1: prim_luminances[prim_idx][0],
-                    right_luminance_or_v2_2: prim_luminances[prim_idx][1],
-                    down_luminance_or_v2_3: prim_luminances[prim_idx][2],
-                    up_luminance_or_prim_luminance: prim_luminances[prim_idx][3],
-                    back_luminance: prim_luminances[prim_idx][4],
-                    front_luminance: prim_luminances[prim_idx][5],
+                    min: prim_aabbs[prim_idx].min().coords.into(),
+                    max: prim_aabbs[prim_idx].max().coords.into(),
+                    luminance: prim_luminances[prim_idx],
                     parent_idx: leaf.parent_idx as u32,
                 }
             }
             BuildBvhNodeKind::InternalNode(ref internal_node) => BvhNode {
                 left_node_idx: internal_node.left_child_idx as u32,
                 right_node_idx_or_prim_idx: internal_node.right_child_idx as u32,
-                min_or_v0: (node.aabb.min().coords - padding).into(),
-                max_or_v1: (node.aabb.max().coords + padding).into(),
+                min: (node.aabb.min().coords - padding).into(),
+                max: (node.aabb.max().coords + padding).into(),
                 parent_idx: internal_node.parent_idx as u32,
                 ..Default::default()
             },
@@ -574,15 +469,9 @@ pub fn build_tl_bvh(
             let left_child = opt_bvh[opt_bvh[i].left_node_idx as usize].clone();
             let right_child = opt_bvh[opt_bvh[i].right_node_idx_or_prim_idx as usize].clone();
 
-            // process left child
+            // process children
             for child in [left_child, right_child] {
-                // child is an internal node
-                opt_bvh[i].left_luminance_or_v2_1 += child.left_luminance_or_v2_1;
-                opt_bvh[i].right_luminance_or_v2_2 += child.right_luminance_or_v2_2;
-                opt_bvh[i].down_luminance_or_v2_3 += child.down_luminance_or_v2_3;
-                opt_bvh[i].up_luminance_or_prim_luminance += child.up_luminance_or_prim_luminance;
-                opt_bvh[i].back_luminance += child.back_luminance;
-                opt_bvh[i].front_luminance += child.front_luminance;
+                opt_bvh[i].luminance += child.luminance;
             }
         }
     }
@@ -598,9 +487,8 @@ fn create_blas_visualization(blas_nodes: &Vec<BvhNode>) -> Vec<Vertex3D> {
         vertexes: &mut Vec<Vertex3D>,
     ) {
         let node = &blas_nodes[node_idx];
-        let loc =
-            Point3::from((Vector3::from(node.min_or_v0) + Vector3::from(node.max_or_v1)) / 2.0);
-        let dims = Vector3::from(node.max_or_v1) - Vector3::from(node.min_or_v0);
+        let loc = Point3::from((Vector3::from(node.min) + Vector3::from(node.max)) / 2.0);
+        let dims = Vector3::from(node.max) - Vector3::from(node.min);
         vertexes.extend(utils::cuboid(loc, dims));
 
         match blas_nodes[node_idx].left_node_idx {

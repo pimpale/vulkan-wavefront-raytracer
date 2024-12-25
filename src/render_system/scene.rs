@@ -41,7 +41,7 @@ struct Object {
     blas: Arc<AccelerationStructure>,
     light_vertex_buffer: Option<Subbuffer<[LightVertex3D]>>,
     light_blas: Option<Arc<AccelerationStructure>>,
-    luminance: [f32; 6],
+    luminance: f32,
     light_aabb: Aabb,
     light_bl_bvh_buffer: Option<Subbuffer<[BvhNode]>>,
 }
@@ -447,21 +447,18 @@ where
     }
 }
 
-fn light_bl_bvh_buffer_to_light_vertexes(light_bl_bvh_buffer: &[BvhNode]) -> Vec<LightVertex3D> {
+fn light_bl_bvh_buffer_to_light_vertexes(
+    vertexes: &[Vertex3D],
+    light_bl_bvh_buffer: &[BvhNode],
+) -> Vec<LightVertex3D> {
     let mut light_vertexes = Vec::new();
     for (i, bvh_node) in light_bl_bvh_buffer.iter().enumerate() {
-        let i = i as u32;
+        let idx = i as u32;
         if bvh_node.left_node_idx == u32::MAX {
-            light_vertexes.push(LightVertex3D::new(bvh_node.min_or_v0, i));
-            light_vertexes.push(LightVertex3D::new(bvh_node.max_or_v1, i));
-            light_vertexes.push(LightVertex3D::new(
-                [
-                    bvh_node.left_luminance_or_v2_1,
-                    bvh_node.right_luminance_or_v2_2,
-                    bvh_node.down_luminance_or_v2_3,
-                ],
-                i,
-            ));
+            let pi = bvh_node.right_node_idx_or_prim_idx as usize;
+            light_vertexes.push(LightVertex3D::new(vertexes[pi * 3 + 0].position, idx));
+            light_vertexes.push(LightVertex3D::new(vertexes[pi * 3 + 1].position, idx));
+            light_vertexes.push(LightVertex3D::new(vertexes[pi * 3 + 2].position, idx));
         }
     }
     light_vertexes
@@ -475,7 +472,7 @@ pub enum SceneUploadedObjectHandle {
         light_vertex_buffer: Option<Subbuffer<[LightVertex3D]>>,
         light_bl_bvh_buffer: Option<Subbuffer<[BvhNode]>>,
         light_aabb: Aabb,
-        luminance: [f32; 6],
+        luminance: f32,
     },
 }
 
@@ -497,7 +494,7 @@ impl SceneUploader {
         assert!(vertexes.len() % 3 == 0);
 
         // gather data for every luminous triangle
-        let mut prim_luminance_per_area = vec![];
+        let mut prim_luminances = vec![];
         let mut prim_index_ids = vec![];
         let mut prim_vertexes = vec![];
 
@@ -509,7 +506,7 @@ impl SceneUploader {
                 let c = Point3::from(vertexes[i * 3 + 2].position);
                 let area = (b - a).cross(&(c - a)).norm() / 2.0;
                 prim_vertexes.extend_from_slice(&[a, b, c]);
-                prim_luminance_per_area.push(luminance * area);
+                prim_luminances.push(luminance * area);
                 prim_index_ids.push(i as u32);
             }
         }
@@ -540,7 +537,7 @@ impl SceneUploader {
                 memory_type_filter: MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                 ..Default::default()
             },
-            vertexes,
+            vertexes.clone(),
         )
         .unwrap();
 
@@ -558,98 +555,96 @@ impl SceneUploader {
             ))
             .unwrap();
 
-        let (light_bl_bvh_buffer, light_vertex_buffer, luminance, light_aabb) = if prim_index_ids
-            .len()
-            > 0
-        {
-            let (light_bl_bvh, light_aabb, luminance) =
-                bvh::build::build_bl_bvh(&prim_luminance_per_area, &prim_vertexes, &prim_index_ids);
+        let (light_bl_bvh_buffer, light_vertex_buffer, luminance, light_aabb) =
+            if prim_index_ids.len() > 0 {
+                let (light_bl_bvh, light_aabb, luminance) =
+                    bvh::build::build_bl_bvh(&prim_luminances, &prim_vertexes, &prim_index_ids);
 
-            let light_vertexes = light_bl_bvh_buffer_to_light_vertexes(&light_bl_bvh);
+                let light_vertexes = light_bl_bvh_buffer_to_light_vertexes(&vertexes, &light_bl_bvh);
 
-            let light_vertex_dst_buffer: Subbuffer<[LightVertex3D]> = Buffer::new_slice(
-                self.memory_allocator.clone(),
-                BufferCreateInfo {
-                    usage: BufferUsage::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY
-                        | BufferUsage::SHADER_DEVICE_ADDRESS
-                        | BufferUsage::TRANSFER_DST,
-                    ..Default::default()
-                },
-                AllocationCreateInfo {
-                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
-                    ..Default::default()
-                },
-                prim_vertexes.len() as u64,
-            )
-            .unwrap();
-
-            let light_vertex_src_buffer = Buffer::from_iter(
-                self.memory_allocator.clone(),
-                BufferCreateInfo {
-                    usage: BufferUsage::TRANSFER_SRC,
-                    ..Default::default()
-                },
-                AllocationCreateInfo {
-                    memory_type_filter: MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                    ..Default::default()
-                },
-                light_vertexes,
-            )
-            .unwrap();
-
-            transfer_command_buffer
-                .copy_buffer(CopyBufferInfo::buffers(
-                    light_vertex_src_buffer.clone(),
-                    light_vertex_dst_buffer.clone(),
-                ))
+                let light_vertex_dst_buffer: Subbuffer<[LightVertex3D]> = Buffer::new_slice(
+                    self.memory_allocator.clone(),
+                    BufferCreateInfo {
+                        usage: BufferUsage::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY
+                            | BufferUsage::SHADER_DEVICE_ADDRESS
+                            | BufferUsage::TRANSFER_DST,
+                        ..Default::default()
+                    },
+                    AllocationCreateInfo {
+                        memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
+                        ..Default::default()
+                    },
+                    prim_vertexes.len() as u64,
+                )
                 .unwrap();
 
-            let light_bl_bvh_dst_buffer: Subbuffer<[BvhNode]> = Buffer::new_slice(
-                self.memory_allocator.clone(),
-                BufferCreateInfo {
-                    usage: BufferUsage::TRANSFER_DST
-                        | BufferUsage::STORAGE_BUFFER
-                        | BufferUsage::SHADER_DEVICE_ADDRESS,
-                    ..Default::default()
-                },
-                AllocationCreateInfo {
-                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
-                    ..Default::default()
-                },
-                light_bl_bvh.len() as u64,
-            )
-            .unwrap();
-
-            let light_bl_bvh_src_buffer = Buffer::from_iter(
-                self.memory_allocator.clone(),
-                BufferCreateInfo {
-                    usage: BufferUsage::TRANSFER_SRC,
-                    ..Default::default()
-                },
-                AllocationCreateInfo {
-                    memory_type_filter: MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                    ..Default::default()
-                },
-                light_bl_bvh,
-            )
-            .unwrap();
-
-            transfer_command_buffer
-                .copy_buffer(CopyBufferInfo::buffers(
-                    light_bl_bvh_src_buffer.clone(),
-                    light_bl_bvh_dst_buffer.clone(),
-                ))
+                let light_vertex_src_buffer = Buffer::from_iter(
+                    self.memory_allocator.clone(),
+                    BufferCreateInfo {
+                        usage: BufferUsage::TRANSFER_SRC,
+                        ..Default::default()
+                    },
+                    AllocationCreateInfo {
+                        memory_type_filter: MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                        ..Default::default()
+                    },
+                    light_vertexes,
+                )
                 .unwrap();
 
-            (
-                Some(light_bl_bvh_dst_buffer),
-                Some(light_vertex_dst_buffer),
-                luminance,
-                light_aabb,
-            )
-        } else {
-            (None, None, [0.0; 6], Aabb::Empty)
-        };
+                transfer_command_buffer
+                    .copy_buffer(CopyBufferInfo::buffers(
+                        light_vertex_src_buffer.clone(),
+                        light_vertex_dst_buffer.clone(),
+                    ))
+                    .unwrap();
+
+                let light_bl_bvh_dst_buffer: Subbuffer<[BvhNode]> = Buffer::new_slice(
+                    self.memory_allocator.clone(),
+                    BufferCreateInfo {
+                        usage: BufferUsage::TRANSFER_DST
+                            | BufferUsage::STORAGE_BUFFER
+                            | BufferUsage::SHADER_DEVICE_ADDRESS,
+                        ..Default::default()
+                    },
+                    AllocationCreateInfo {
+                        memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
+                        ..Default::default()
+                    },
+                    light_bl_bvh.len() as u64,
+                )
+                .unwrap();
+
+                let light_bl_bvh_src_buffer = Buffer::from_iter(
+                    self.memory_allocator.clone(),
+                    BufferCreateInfo {
+                        usage: BufferUsage::TRANSFER_SRC,
+                        ..Default::default()
+                    },
+                    AllocationCreateInfo {
+                        memory_type_filter: MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                        ..Default::default()
+                    },
+                    light_bl_bvh,
+                )
+                .unwrap();
+
+                transfer_command_buffer
+                    .copy_buffer(CopyBufferInfo::buffers(
+                        light_bl_bvh_src_buffer.clone(),
+                        light_bl_bvh_dst_buffer.clone(),
+                    ))
+                    .unwrap();
+
+                (
+                    Some(light_bl_bvh_dst_buffer),
+                    Some(light_vertex_dst_buffer),
+                    luminance,
+                    light_aabb,
+                )
+            } else {
+                (None, None, 0.0, Aabb::Empty)
+            };
 
         transfer_command_buffer
             .build()
@@ -662,8 +657,8 @@ impl SceneUploader {
 
         SceneUploadedObjectHandle::Uploaded {
             vertex_buffer: vertex_dst_buffer,
-            light_vertex_buffer: light_vertex_buffer,
-            light_bl_bvh_buffer: light_bl_bvh_buffer,
+            light_vertex_buffer,
+            light_bl_bvh_buffer,
             luminance,
             light_aabb,
         }
