@@ -231,8 +231,8 @@ pub struct Renderer {
     command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
     swapchain: Arc<Swapchain>,
     material_descriptor_set: Arc<PersistentDescriptorSet>,
-    bounce_origins: Vec<Subbuffer<[f32]>>,
-    bounce_directions: Vec<Subbuffer<[f32]>>,
+    ray_origins: Vec<Subbuffer<[f32]>>,
+    ray_directions: Vec<Subbuffer<[f32]>>,
     bounce_normals: Vec<Subbuffer<[f32]>>,
     bounce_emissivity: Vec<Subbuffer<[f32]>>,
     bounce_reflectivity: Vec<Subbuffer<[f32]>>,
@@ -508,7 +508,7 @@ impl Renderer {
         .unwrap();
 
         let mut renderer = Renderer {
-            scale: 2,
+            scale: 1,
             num_bounces: 2,
             surface,
             command_buffer_allocator,
@@ -527,8 +527,8 @@ impl Renderer {
             material_descriptor_set,
             frame_count: 0,
             // buffers (to be created)
-            bounce_origins: vec![],
-            bounce_directions: vec![],
+            ray_origins: vec![],
+            ray_directions: vec![],
             bounce_normals: vec![],
             bounce_emissivity: vec![],
             bounce_reflectivity: vec![],
@@ -564,14 +564,14 @@ impl Renderer {
     }
 
     pub fn create_buffers(&mut self) {
-        self.bounce_origins = window_size_dependent_setup(
+        self.ray_origins = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
             true,
             self.scale,
             3 * (self.num_bounces + 1),
         );
-        self.bounce_directions = window_size_dependent_setup(
+        self.ray_directions = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
             true,
@@ -710,11 +710,11 @@ impl Renderer {
                 vec![
                     WriteDescriptorSet::buffer(
                         0,
-                        self.bounce_origins[image_index as usize].clone(),
+                        self.ray_origins[image_index as usize].clone(),
                     ),
                     WriteDescriptorSet::buffer(
                         1,
-                        self.bounce_directions[image_index as usize].clone(),
+                        self.ray_directions[image_index as usize].clone(),
                     ),
                 ]
                 .into(),
@@ -772,7 +772,7 @@ impl Renderer {
                         WriteDescriptorSet::buffer_with_range(
                             2,
                             DescriptorBufferInfo {
-                                buffer: self.bounce_origins[image_index as usize]
+                                buffer: self.ray_origins[image_index as usize]
                                     .as_bytes()
                                     .clone(),
                                 range: b * 3 * sect_sz..(b + 1) * 3 * sect_sz,
@@ -782,7 +782,7 @@ impl Renderer {
                         WriteDescriptorSet::buffer_with_range(
                             3,
                             DescriptorBufferInfo {
-                                buffer: self.bounce_directions[image_index as usize]
+                                buffer: self.ray_directions[image_index as usize]
                                     .as_bytes()
                                     .clone(),
                                 range: b * 3 * sect_sz..(b + 1) * 3 * sect_sz,
@@ -792,7 +792,7 @@ impl Renderer {
                         WriteDescriptorSet::buffer_with_range(
                             4,
                             DescriptorBufferInfo {
-                                buffer: self.bounce_origins[image_index as usize]
+                                buffer: self.ray_origins[image_index as usize]
                                     .as_bytes()
                                     .clone(),
                                 range: (b + 1) * 3 * sect_sz..(b + 2) * 3 * sect_sz,
@@ -802,13 +802,12 @@ impl Renderer {
                         WriteDescriptorSet::buffer_with_range(
                             5,
                             DescriptorBufferInfo {
-                                buffer: self.bounce_directions[image_index as usize]
+                                buffer: self.ray_directions[image_index as usize]
                                     .as_bytes()
                                     .clone(),
                                 range: (b + 1) * 3 * sect_sz..(b + 2) * 3 * sect_sz,
                             },
                         ),
-                        // output ray normal
                         WriteDescriptorSet::buffer_with_range(
                             6,
                             DescriptorBufferInfo {
@@ -919,7 +918,7 @@ impl Renderer {
                         WriteDescriptorSet::buffer_with_range(
                             3,
                             DescriptorBufferInfo {
-                                buffer: self.bounce_origins[image_index as usize]
+                                buffer: self.ray_origins[image_index as usize]
                                     .as_bytes()
                                     .clone(),
                                 range: (b + 1) * 3 * sect_sz..(b + 2) * 3 * sect_sz,
@@ -929,7 +928,7 @@ impl Renderer {
                         WriteDescriptorSet::buffer_with_range(
                             4,
                             DescriptorBufferInfo {
-                                buffer: self.bounce_directions[image_index as usize]
+                                buffer: self.ray_directions[image_index as usize]
                                     .as_bytes()
                                     .clone(),
                                 range: (b + 1) * 3 * sect_sz..(b + 2) * 3 * sect_sz,
@@ -1000,7 +999,7 @@ impl Renderer {
                     // ),
                     WriteDescriptorSet::buffer(
                         1,
-                        self.bounce_directions[image_index as usize].clone(),
+                        self.ray_directions[image_index as usize].clone(),
                     ),
                     WriteDescriptorSet::buffer(
                         2,

@@ -59,11 +59,11 @@ layout(set = 1, binding = 3, scalar) readonly buffer InputsRayDirection {
     vec3 input_direction[];
 };
 
-layout(set = 1, binding = 4, scalar) writeonly buffer OutputsOrigin {
+layout(set = 1, binding = 4, scalar) writeonly buffer OutputsRayOrigin {
     vec3 output_origin[];
 };
 
-layout(set = 1, binding = 5, scalar) writeonly buffer OutputsDirection {
+layout(set = 1, binding = 5, scalar) writeonly buffer OutputsRayDirection {
     vec3 output_direction[];
 };
 
@@ -464,6 +464,10 @@ void main() {
         reflectivity = vec3(1.0);
         bsdf_pdf = 1.0;
     } else {
+        // offset origin slightly to avoid self intersection
+        new_origin += EPSILON_BLOCK*2 * ics.normal;
+
+
         // lambertian scattering
         reflectivity = reflectivity / M_PI;
 
@@ -479,11 +483,11 @@ void main() {
         if(result.success && result.importance > 0.0) {
             // chance of picking the light if our bvh traversal was successful
             // light_pdf_mis_weight = clamp(result.importance / 10.0, 0.0, 0.5);
-            if(nee_type == 1) {
+            // if(nee_type == 1) {
                 light_pdf_mis_weight = 0.3;
-            } else if(nee_type == 2) {
-                light_pdf_mis_weight = 0.9;
-            }
+            // } else if(nee_type == 2) {
+            //     light_pdf_mis_weight = 0.9;
+            // }
         }
 
         // randomly choose whether or not to sample the light

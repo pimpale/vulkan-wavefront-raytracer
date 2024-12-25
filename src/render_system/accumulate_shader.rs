@@ -93,7 +93,7 @@ void main() {
             
             // render debug info
             if (debug_view == 1) {
-                const uint bounce_to_render = 0;
+                const uint bounce_to_render = 1;
                 const uint bid = bounce_to_render * srcysize * srcxsize 
                                + srcy   * srcxsize 
                                + srcx;
