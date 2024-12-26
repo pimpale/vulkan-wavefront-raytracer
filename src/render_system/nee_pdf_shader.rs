@@ -33,8 +33,8 @@ layout(buffer_reference, buffer_reference_align=4, scalar) readonly buffer BvhNo
     uint left_node_idx;
     uint right_node_idx_or_prim_idx;
     vec3 min;
-    vec3 max;
     float power;
+    vec3 max;
     uint parent_node_idx;
 };
 
@@ -116,17 +116,40 @@ float triangleRadiusSquared(vec3 center, vec3[3] tri) {
     );
 }
 
+// returns true if the point is visible from the shading_point with normal
+float pointVisible(vec3 shading_point, vec3 normal, vec3 target_point) {
+    vec3 to_v = target_point - shading_point;
+    return float(dot(to_v, normal) >= EPSILON_BLOCK);
+}
+
+
 float nodeImportance(bool topLevel, vec3 point, vec3 normal, mat4x3 transform, BvhNode node) {
     // get corners
     vec3 v000 = transform * vec4(node.min, 1.0);
     vec3 v111 = transform * vec4(node.max, 1.0);
+    vec3 v001 = vec3(v000.x, v000.y, v111.z);
+    vec3 v010 = vec3(v000.x, v111.y, v000.z);
+    vec3 v011 = vec3(v000.x, v111.y, v111.z);
+    vec3 v100 = vec3(v111.x, v000.y, v000.z);
+    vec3 v101 = vec3(v111.x, v000.y, v111.z);
+    vec3 v110 = vec3(v111.x, v111.y, v000.z);
+
+    float visible = 0;
+    visible += 0.125*pointVisible(point, normal, v000);
+    visible += 0.125*pointVisible(point, normal, v001);
+    visible += 0.125*pointVisible(point, normal, v010);
+    visible += 0.125*pointVisible(point, normal, v011);
+    visible += 0.125*pointVisible(point, normal, v100);
+    visible += 0.125*pointVisible(point, normal, v101);
+    visible += 0.125*pointVisible(point, normal, v110);
+    visible += 0.125*pointVisible(point, normal, v111);
 
     float distance_sq = max(
         lengthSquared(v111 - v000),
         lengthSquared(0.5*(v000 + v111) - point)
     );
 
-    return node.power / distance_sq;
+    return node.power / distance_sq * visible;
 }
 
 float reverseTraverseBvh(

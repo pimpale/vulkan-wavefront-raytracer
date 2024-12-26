@@ -29,8 +29,8 @@ layout(buffer_reference, buffer_reference_align=4, scalar) readonly buffer BvhNo
     uint left_node_idx;
     uint right_node_idx_or_prim_idx;
     vec3 min;
-    vec3 max;
     float power;
+    vec3 max;
     uint parent_node_idx;
 };
 
@@ -170,14 +170,10 @@ float triangleRadiusSquared(vec3 center, vec3[3] tri) {
     );
 }
 
-// returns true if any part of the rect is visible from the point in the direction of the normal
-bool rectIsVisible(vec3 point, vec3 normal, vec3[4] rect) {
-    uint visible = 0;
-    for(uint i = 0; i < 4; i++) {
-        vec3 to_v = rect[i] - point;
-        visible |= uint(dot(to_v, normal) >= EPSILON_BLOCK);
-    }
-    return bool(visible);
+// returns true if the point is visible from the shading_point with normal
+uint pointVisible(vec3 shading_point, vec3 normal, vec3 target_point) {
+    vec3 to_v = target_point - shading_point;
+    return uint(dot(to_v, normal) >= EPSILON_BLOCK);
 }
 
 
@@ -186,13 +182,29 @@ float nodeImportance(bool topLevel, vec3 point, vec3 normal, mat4x3 transform, B
     // get corners
     vec3 v000 = transform * vec4(node.min, 1.0);
     vec3 v111 = transform * vec4(node.max, 1.0);
+    vec3 v001 = vec3(v000.x, v000.y, v111.z);
+    vec3 v010 = vec3(v000.x, v111.y, v000.z);
+    vec3 v011 = vec3(v000.x, v111.y, v111.z);
+    vec3 v100 = vec3(v111.x, v000.y, v000.z);
+    vec3 v101 = vec3(v111.x, v000.y, v111.z);
+    vec3 v110 = vec3(v111.x, v111.y, v000.z);
+
+    uint visible = 0;
+    visible += pointVisible(point, normal, v000);
+    visible += pointVisible(point, normal, v001);
+    visible += pointVisible(point, normal, v010);
+    visible += pointVisible(point, normal, v011);
+    visible += pointVisible(point, normal, v100);
+    visible += pointVisible(point, normal, v101);
+    visible += pointVisible(point, normal, v110);
+    visible += pointVisible(point, normal, v111);
 
     float distance_sq = max(
         lengthSquared(v111 - v000),
         lengthSquared(0.5*(v000 + v111) - point)
     );
 
-    return node.power / distance_sq;
+    return node.power / distance_sq * (float(visible) / 8.0);
 }
 
 struct BvhTraverseResult {
@@ -482,12 +494,7 @@ void main() {
         // otherwise, the chance is proportional to the importance of our pick
         if(result.success && result.importance > 0.0) {
             // chance of picking the light if our bvh traversal was successful
-            // light_pdf_mis_weight = clamp(result.importance / 10.0, 0.0, 0.5);
-            // if(nee_type == 1) {
-                light_pdf_mis_weight = 0.9;
-            // } else if(nee_type == 2) {
-            //     light_pdf_mis_weight = 0.9;
-            // }
+            light_pdf_mis_weight = 0.3;
         }
 
         // randomly choose whether or not to sample the light

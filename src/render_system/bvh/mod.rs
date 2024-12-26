@@ -16,10 +16,11 @@ pub struct BvhNode {
     pub right_node_idx_or_prim_idx: u32,
     // the min bound
     pub min: [f32; 3],
-    // the max bound
-    pub max: [f32; 3],
     // the power emitted by the entire object
     pub power: f32,
+    // the max bound
+    pub max: [f32; 3],
+    // the parent index
     pub parent_idx: u32,
 }
 
