@@ -321,7 +321,7 @@ impl InnerChunkManager {
         let (chunk_coords, block_coords) = chunk::global_to_chunk_coords(global_coords);
         match self.chunks.get(&chunk_coords) {
             Some(Chunk {
-                data: Some(ref data),
+                data: Some(data),
                 ..
             }) => Some(data[chunk::chunk_idx2(block_coords)]),
             _ => None,

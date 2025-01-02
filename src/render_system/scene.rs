@@ -673,14 +673,14 @@ fn create_top_level_acceleration_structure(
 ) -> Arc<AccelerationStructure> {
     let instances = bottom_level_acceleration_structures
         .iter()
-        .map(|(blas, &isometry)| AccelerationStructureInstance {
+        .map(|(blas, isometry)| AccelerationStructureInstance {
             instance_shader_binding_table_record_offset_and_flags: Packed24_8::new(0, 0),
             acceleration_structure_reference: match blas {
                 Some(blas) => blas.device_address().get(),
                 None => 0,
             },
             transform: {
-                let isometry_matrix: [[f32; 4]; 4] = Matrix4::from(isometry).transpose().into();
+                let isometry_matrix: [[f32; 4]; 4] = Matrix4::from(**isometry).transpose().into();
                 [isometry_matrix[0], isometry_matrix[1], isometry_matrix[2]]
             },
             ..Default::default()
