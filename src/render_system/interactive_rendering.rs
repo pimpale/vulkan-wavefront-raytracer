@@ -156,9 +156,9 @@ fn create_swapchain(
         surface.clone(),
         SwapchainCreateInfo {
             min_image_count: MIN_IMAGE_COUNT as u32,
-            image_format: Format::B8G8R8A8_SRGB,
+            image_format: Format::B8G8R8A8_UNORM,
             image_extent: window.inner_size().into(),
-            image_usage: ImageUsage::TRANSFER_DST,
+            image_usage: ImageUsage::STORAGE,
             composite_alpha: surface_capabilities
                 .supported_composite_alpha
                 .into_iter()
@@ -242,9 +242,9 @@ pub struct Renderer {
     // the sampling pdf of the next direction
     bounce_omega_sampling_pdf: Vec<Subbuffer<[f32]>>,
     debug_info: Vec<Subbuffer<[f32]>>,
-    postprocess_target: Vec<Subbuffer<[u8]>>,
     frame_finished_rendering: Vec<Option<FenceSignalFuture<Box<dyn GpuFuture>>>>,
     swapchain_images: Vec<Arc<Image>>,
+    swapchain_image_views: Vec<Arc<ImageView>>,
     raygen_pipeline: Arc<ComputePipeline>,
     raytrace_pipeline: Arc<ComputePipeline>,
     nee_pdf_pipeline: Arc<ComputePipeline>,
@@ -341,6 +341,10 @@ impl Renderer {
         let device = memory_allocator.device().clone();
 
         let (swapchain, swapchain_images) = create_swapchain(device.clone(), surface.clone());
+        let swapchain_image_views = swapchain_images
+            .iter()
+            .map(|image| ImageView::new_default(image.clone()).unwrap())
+            .collect::<Vec<_>>();
 
         let raygen_pipeline = {
             let cs = raygen::load(device.clone())
@@ -557,6 +561,7 @@ impl Renderer {
             postprocess_pipeline,
             descriptor_set_allocator,
             swapchain_images,
+            swapchain_image_views,
             frame_finished_rendering: frame_futures,
             memory_allocator,
             wdd_needs_rebuild: false,
@@ -574,7 +579,6 @@ impl Renderer {
             bounce_outgoing_radiance: vec![],
             bounce_omega_sampling_pdf: vec![],
             debug_info: vec![],
-            postprocess_target: vec![],
             rng: rand::rng(),
         };
 
@@ -599,7 +603,11 @@ impl Renderer {
 
         self.swapchain = new_swapchain;
         self.swapchain_images = new_images;
-        self.frame_finished_rendering = (0..self.swapchain_images.len()).map(|_| None).collect();
+        self.swapchain_image_views = self
+            .swapchain_images
+            .iter()
+            .map(|image| ImageView::new_default(image.clone()).unwrap())
+            .collect::<Vec<_>>();
         self.create_buffers();
     }
 
@@ -681,14 +689,6 @@ impl Renderer {
             true,
             self.scale,
             3,
-        );
-        // the final image
-        self.postprocess_target = window_size_dependent_setup(
-            self.memory_allocator.clone(),
-            &self.swapchain_images,
-            true,
-            1,
-            4,
         );
     }
 
@@ -1128,12 +1128,12 @@ impl Renderer {
                             },
                         ),
                         WriteDescriptorSet::buffer(
-                            2,
+                            1,
                             self.debug_info[self.frame_count % MIN_IMAGE_COUNT].clone(),
                         ),
-                        WriteDescriptorSet::buffer(
-                            3,
-                            self.postprocess_target[self.frame_count % MIN_IMAGE_COUNT].clone(),
+                        WriteDescriptorSet::image_view(
+                            2,
+                            self.swapchain_image_views[image_index as usize].clone(),
                         ),
                     ]
                     .into(),
@@ -1152,11 +1152,6 @@ impl Renderer {
                 )
                 .unwrap()
                 .dispatch(self.group_count(&extent))
-                .unwrap()
-                .copy_buffer_to_image(CopyBufferToImageInfo::buffer_image(
-                    self.postprocess_target[self.frame_count % MIN_IMAGE_COUNT].clone(),
-                    self.swapchain_images[image_index as usize].clone(),
-                ))
                 .unwrap();
         }
 

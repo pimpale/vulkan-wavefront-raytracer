@@ -14,13 +14,11 @@ layout(set = 0, binding = 0, scalar) readonly restrict buffer InputOutgoingRadia
     vec3 input_outgoing_radiance[];
 };
 
-layout(set = 0, binding = 2, scalar) readonly restrict buffer InputDebugInfo {
+layout(set = 0, binding = 1, scalar) readonly restrict buffer InputDebugInfo {
     vec3 input_debug_info[];
 };
 
-layout(set = 0, binding = 3) writeonly restrict buffer OutputImage {
-    u8vec4 output_image[];
-};
+layout(set = 0, binding = 2) uniform writeonly image2D output_image;
 
 layout(push_constant, scalar) uniform PushConstants {
     uint debug_view;
@@ -66,14 +64,13 @@ void main() {
 
     // average the samples
     pixel_color = pixel_color / float(srcscale*srcscale);
-    u8vec4 pixel_data = u8vec4(pixel_color.zyx*255, 255);
 
     // write to a patch of size dstscale*dstscale
     for (uint scaley = 0; scaley < dstscale; scaley++) {
         const uint dsty = gl_GlobalInvocationID.y * dstscale + scaley;
         for(uint scalex = 0; scalex < dstscale; scalex++) {
             const uint dstx = gl_GlobalInvocationID.x * dstscale + scalex;
-            output_image[dsty*xsize*dstscale + dstx] = u8vec4(pixel_color.zyx*255, 255);
+            imageStore(output_image, ivec2(dstx, dsty), vec4(pixel_color, 1.0));
         }
     }
 }

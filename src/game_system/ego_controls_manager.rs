@@ -1,20 +1,18 @@
 use std::{cell::RefCell, rc::Rc, sync::Arc, time::Instant};
 
-use nalgebra::{Point3, Vector3};
-use rapier3d::{dynamics::RigidBodyType, math::AngularInertia};
+use nalgebra::Vector3;
+use rapier3d::dynamics::RigidBodyType;
 use winit::keyboard::KeyCode;
 
 use crate::{
-    camera::{InteractiveCamera, RenderingPreferences},
-    game_system::game_world::WorldChange,
-    handle_user_input::UserInputState,
-    utils,
+    camera::InteractiveCamera, game_system::game_world::WorldChange,
+    handle_user_input::UserInputState, utils,
 };
 
 use super::{
     block::{BlockDefinitionTable, BlockFace, BlockIdx},
     chunk_manager::ChunkQuerier,
-    game_world::{EntityCreationData, EntityPhysicsData},
+    game_world::EntityCreationData,
     manager::{Manager, UpdateData},
 };
 
@@ -106,27 +104,14 @@ impl Manager for EgoControlsManager {
             dbg!(current_prefs.nee_type);
             camera.set_rendering_preferences(current_prefs);
         }
+
         if UserInputState::key_pressed(window_events, KeyCode::KeyB) {
             let mut current_prefs = camera.rendering_preferences();
             current_prefs.debug_view = match current_prefs.debug_view {
                 0 => 1,
-                1 => 2,
                 _ => 0,
             };
             dbg!(current_prefs.debug_view);
-            camera.set_rendering_preferences(current_prefs);
-        }
-
-        if UserInputState::key_pressed(window_events, KeyCode::KeyI) {
-            let mut current_prefs = camera.rendering_preferences();
-            current_prefs.restir_spatial_iterations = match current_prefs.restir_spatial_iterations {
-                0 => 5,
-                5 => 10,
-                10 => 15,
-                15 => 20,
-                _ => 0,
-            };
-            dbg!(current_prefs.restir_spatial_iterations);
             camera.set_rendering_preferences(current_prefs);
         }
 
