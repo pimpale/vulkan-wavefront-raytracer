@@ -1,5 +1,8 @@
 use nalgebra::Point2;
-use winit::event::{ElementState, KeyboardInput, MouseButton, VirtualKeyCode};
+use winit::{
+    event::{ElementState, KeyEvent, MouseButton},
+    keyboard::{Key, KeyCode, PhysicalKey},
+};
 
 #[derive(Clone, Debug)]
 pub struct UserInputState1 {
@@ -61,15 +64,15 @@ impl UserInputState {
 
     pub fn last_key_pressed(
         input: &Vec<winit::event::WindowEvent>,
-        keys: &[VirtualKeyCode],
-    ) -> Option<VirtualKeyCode> {
+        keys: &[KeyCode],
+    ) -> Option<KeyCode> {
         let mut last_key = None;
         for event in input {
             match event {
                 winit::event::WindowEvent::KeyboardInput {
-                    input:
-                        KeyboardInput {
-                            virtual_keycode: Some(kc),
+                    event:
+                        KeyEvent {
+                            physical_key: PhysicalKey::Code(kc),
                             state,
                             ..
                         },
@@ -85,7 +88,7 @@ impl UserInputState {
         last_key
     }
 
-    pub fn key_pressed(input: &Vec<winit::event::WindowEvent>, key: VirtualKeyCode) -> bool {
+    pub fn key_pressed(input: &Vec<winit::event::WindowEvent>, key: KeyCode) -> bool {
         Self::last_key_pressed(input, &[key]).is_some()
     }
 
@@ -104,26 +107,26 @@ impl UserInputState {
                         (*state == ElementState::Pressed) && (*button == MouseButton::Right);
                 }
                 winit::event::WindowEvent::KeyboardInput {
-                    input:
-                        KeyboardInput {
-                            virtual_keycode: Some(kc),
+                    event:
+                        KeyEvent {
+                            physical_key: PhysicalKey::Code(kc),
                             state,
                             ..
                         },
                     ..
                 } => match kc {
-                    VirtualKeyCode::W => current.w = state == &ElementState::Pressed,
-                    VirtualKeyCode::A => current.a = state == &ElementState::Pressed,
-                    VirtualKeyCode::S => current.s = state == &ElementState::Pressed,
-                    VirtualKeyCode::D => current.d = state == &ElementState::Pressed,
-                    VirtualKeyCode::Q => current.q = state == &ElementState::Pressed,
-                    VirtualKeyCode::E => current.e = state == &ElementState::Pressed,
-                    VirtualKeyCode::Up => current.up = state == &ElementState::Pressed,
-                    VirtualKeyCode::Left => current.left = state == &ElementState::Pressed,
-                    VirtualKeyCode::Down => current.down = state == &ElementState::Pressed,
-                    VirtualKeyCode::Right => current.right = state == &ElementState::Pressed,
-                    VirtualKeyCode::Space => current.space = state == &ElementState::Pressed,
-                    VirtualKeyCode::LShift => current.shift = state == &ElementState::Pressed,
+                    KeyCode::KeyW => current.w = state == &ElementState::Pressed,
+                    KeyCode::KeyA => current.a = state == &ElementState::Pressed,
+                    KeyCode::KeyS => current.s = state == &ElementState::Pressed,
+                    KeyCode::KeyD => current.d = state == &ElementState::Pressed,
+                    KeyCode::KeyQ => current.q = state == &ElementState::Pressed,
+                    KeyCode::KeyE => current.e = state == &ElementState::Pressed,
+                    KeyCode::ArrowUp => current.up = state == &ElementState::Pressed,
+                    KeyCode::ArrowLeft => current.left = state == &ElementState::Pressed,
+                    KeyCode::ArrowDown => current.down = state == &ElementState::Pressed,
+                    KeyCode::ArrowRight => current.right = state == &ElementState::Pressed,
+                    KeyCode::Space => current.space = state == &ElementState::Pressed,
+                    KeyCode::ShiftLeft => current.shift = state == &ElementState::Pressed,
                     _ => (),
                 },
                 _ => (),

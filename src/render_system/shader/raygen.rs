@@ -9,11 +9,11 @@ vulkano_shaders::shader! {
 
 layout(local_size_x = 32, local_size_y = 32, local_size_z = 1) in;
 
-layout(set = 0, binding = 0, scalar) writeonly buffer OutputsOrigin {
+layout(set = 0, binding = 0, scalar) writeonly restrict buffer OutputsOrigin {
     vec3 output_origin[];
 };
 
-layout(set = 0, binding = 1, scalar) writeonly buffer OutputsDirection {
+layout(set = 0, binding = 1, scalar) writeonly restrict buffer OutputsDirection {
     vec3 output_direction[];
 };
 
@@ -27,7 +27,7 @@ struct Camera {
 
 layout(push_constant, scalar) uniform PushConstants {
     Camera camera;
-    uint frame_seed;
+    uint invocation_seed;
 } push_constants;
 
 
@@ -95,13 +95,13 @@ void main() {
               gl_GlobalInvocationID.y   * xsize 
             + gl_GlobalInvocationID.x; 
 
-    uint seed = murmur3_combine(push_constants.frame_seed, bid);
-
     // initial ray origin and direction
     vec2 uv = screen_to_uv(gl_GlobalInvocationID.xy, camera.screen_size);
     float aspect = float(camera.screen_size.x) / float(camera.screen_size.y);
 
-    vec2 jitter = 0.01*vec2(
+    uint seed = push_constants.invocation_seed;
+
+    vec2 jitter = 0.00*vec2(
         (1.0/camera.screen_size.x)*(murmur3_finalizef(murmur3_combine(seed, 0))-0.5),
         (1.0/camera.screen_size.y)*(murmur3_finalizef(murmur3_combine(seed, 1))-0.5)
     );

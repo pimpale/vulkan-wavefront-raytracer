@@ -18,18 +18,18 @@ layout(local_size_x = 32, local_size_y = 32, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) uniform accelerationStructureEXT light_top_level_acceleration_structure;
 
-layout(buffer_reference, buffer_reference_align=4, scalar) readonly buffer Vertex {
+layout(buffer_reference, buffer_reference_align=4, scalar) readonly restrict buffer Vertex {
     vec3 position;
     uint t;
     vec2 uv;
 };
 
-layout(buffer_reference, buffer_reference_align=4, scalar) readonly buffer LightVertex {
+layout(buffer_reference, buffer_reference_align=4, scalar) readonly restrict buffer LightVertex {
     vec3 position;
     uint light_bvh_node_idx;
 };
 
-layout(buffer_reference, buffer_reference_align=4, scalar) readonly buffer BvhNode {
+layout(buffer_reference, buffer_reference_align=4, scalar) readonly restrict buffer BvhNode {
     uint left_node_idx;
     uint right_node_idx_or_prim_idx;
     vec3 min;
@@ -51,40 +51,39 @@ struct InstanceData {
     mat4x3 transform;
 };
 
-layout(set = 0, binding = 1, scalar) readonly buffer InstanceDataBuffer {
+layout(set = 0, binding = 1, scalar) readonly restrict buffer InstanceDataBuffer {
     InstanceData instance_data[];
 };
 
 // normal of the ray intersection location
-layout(set = 0, binding = 2, scalar) readonly buffer InputsIntersectionNormal {
+layout(set = 0, binding = 2, scalar) readonly restrict buffer InputsIntersectionNormal {
     vec3 intersection_normal[];
 };
 
 // the location of the intersection
-layout(set = 0, binding = 3, scalar) readonly buffer InputsIntersectionPosition {
+layout(set = 0, binding = 3, scalar) readonly restrict buffer InputsIntersectionPosition {
     vec3 input_intersection_position[];
 };
 
 // outgoing direction of the ray that just intersected
-layout(set = 0, binding = 4, scalar) readonly buffer InputsIntersectionOutDirection {
+layout(set = 0, binding = 4, scalar) readonly restrict buffer InputsIntersectionOutDirection {
     vec3 intersection_out_direction[];
 };
 
-layout(set = 0, binding = 5) readonly buffer InputsNeeMisWeight {
+layout(set = 0, binding = 5) readonly restrict buffer InputsNeeMisWeight {
     float input_nee_mis_weight[];
 };
 
-layout(set = 0, binding = 6) writeonly buffer OutputsNeePdf {
+layout(set = 0, binding = 6) writeonly restrict buffer OutputsNeePdf {
     float output_nee_pdf[];
 };
 
-layout(set = 0, binding = 7) writeonly buffer OutputsDebugInfo {
-    vec4 output_debug_info[];
+layout(set = 0, binding = 7) writeonly restrict buffer OutputsDebugInfo {
+    vec3 output_debug_info[];
 };
 
 layout(push_constant, scalar) uniform PushConstants {
     uint nee_type;
-    uint bounce_seed;
     uint xsize;
     uint ysize;
     uint64_t tl_bvh_addr;
@@ -307,7 +306,8 @@ void main() {
     rayQueryInitializeEXT(
         ray_query,
         light_top_level_acceleration_structure,
-        gl_RayFlagsCullBackFacingTrianglesEXT, // cull back faces (they have zero importance anyway)
+        // gl_RayFlagsCullBackFacingTrianglesEXT, // cull back faces (they have zero importance anyway)
+        gl_RayFlagsNoneEXT,
         0xFF,
         origin,
         t_min,

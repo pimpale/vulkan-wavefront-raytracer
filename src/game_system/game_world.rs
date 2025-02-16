@@ -97,7 +97,7 @@ pub struct GameWorld {
     renderer: interactive_rendering::Renderer,
 
     // manager data
-    events_since_last_step: Vec<winit::event::WindowEvent<'static>>,
+    events_since_last_step: Vec<winit::event::WindowEvent>,
     changes_since_last_step: Vec<WorldChange>,
     managers: Vec<Box<dyn Manager>>,
 }
@@ -133,7 +133,6 @@ impl GameWorld {
             memory_allocator.clone(),
             descriptor_set_allocator.clone(),
             texture_atlas,
-            1,
         );
 
         let scene = Scene::new(
@@ -200,14 +199,11 @@ impl GameWorld {
         for change in changes {
             match change {
                 WorldChange::GlobalEntityAdd(entity_id, entity_creation_data) => {
-                    self.entities.insert(
-                        *entity_id,
-                        Entity {
-                            mesh: entity_creation_data.mesh.clone(),
-                            isometry: entity_creation_data.isometry.clone(),
-                            physics_data: entity_creation_data.physics.clone(),
-                        },
-                    );
+                    self.entities.insert(*entity_id, Entity {
+                        mesh: entity_creation_data.mesh.clone(),
+                        isometry: entity_creation_data.isometry.clone(),
+                        physics_data: entity_creation_data.physics.clone(),
+                    });
                 }
                 WorldChange::GlobalEntityRemove(entity_id) => {
                     self.entities.remove(&entity_id);
@@ -270,27 +266,19 @@ impl GameWorld {
             let camera = self.camera.borrow();
             (camera.eye_front_right_up(), camera.rendering_preferences())
         };
-        let (
-            top_level_acceleration_structure,
-            light_top_level_acceleration_structure,
-            instance_data,
-            luminance_bvh,
-            build_future,
-        ) = self.scene.borrow_mut().get_tlas();
 
         // render to screen
+        {
+            let mut mutscene = self.scene.borrow_mut();
         self.renderer.render(
-            build_future,
-            top_level_acceleration_structure,
-            light_top_level_acceleration_structure,
-            instance_data,
-            luminance_bvh,
+            &mut mutscene,
             eye,
             front,
             right,
             up,
             rendering_preferences,
         );
+    }
 
         // at this point we can now garbage collect removed entities from the last step (but not this step yet!)
         // this is because the the entities might potentially be in use until the next frame has started rendering
@@ -302,14 +290,11 @@ impl GameWorld {
 
     // add a new entity to the world
     pub fn add_entity(&mut self, entity_id: u32, entity_creation_data: EntityCreationData) {
-        self.entities.insert(
-            entity_id,
-            Entity {
-                mesh: entity_creation_data.mesh.clone(),
-                isometry: entity_creation_data.isometry.clone(),
-                physics_data: entity_creation_data.physics.clone(),
-            },
-        );
+        self.entities.insert(entity_id, Entity {
+            mesh: entity_creation_data.mesh.clone(),
+            isometry: entity_creation_data.isometry.clone(),
+            physics_data: entity_creation_data.physics.clone(),
+        });
         self.changes_since_last_step
             .push(WorldChange::GlobalEntityAdd(
                 entity_id,
@@ -325,9 +310,7 @@ impl GameWorld {
     }
 
     pub fn handle_window_event(&mut self, input: winit::event::WindowEvent) {
-        if let Some(event) = input.to_static() {
-            self.events_since_last_step.push(event);
-        }
+            self.events_since_last_step.push(input);
     }
 
     pub fn scene_uploader(&self) -> &SceneUploader {

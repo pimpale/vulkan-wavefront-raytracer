@@ -1,22 +1,29 @@
 #![feature(array_chunks)]
-use std::sync::Arc;
+use std::{error::Error, sync::Arc};
 
 use game_system::game_world::{EntityCreationData, EntityPhysicsData, GameWorld};
 use nalgebra::{Isometry3, Point3, Vector3};
 use rapier3d::{dynamics::RigidBodyType, geometry::ColliderBuilder};
 
-use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
-use vulkano::descriptor_set::allocator::StandardDescriptorSetAllocator;
-use vulkano::swapchain::Surface;
-
-use vulkano::instance::{Instance, InstanceCreateFlags, InstanceCreateInfo};
-use vulkano::memory::allocator::StandardMemoryAllocator;
-
-use vulkano::VulkanLibrary;
-use winit::event_loop::{ControlFlow, EventLoop};
-
-use winit::event::{Event, WindowEvent};
-use winit::window::WindowBuilder;
+use vulkano::{
+    buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer}, command_buffer::{
+        allocator::StandardCommandBufferAllocator, AutoCommandBufferBuilder, CommandBufferUsage, RenderingAttachmentInfo, RenderingInfo
+    }, descriptor_set::allocator::StandardDescriptorSetAllocator, device::{
+        physical::PhysicalDeviceType, Device, DeviceCreateInfo, DeviceExtensions, DeviceFeatures, Queue, QueueCreateInfo, QueueFlags
+    }, image::{view::ImageView, Image, ImageUsage}, instance::{Instance, InstanceCreateFlags, InstanceCreateInfo}, memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator}, pipeline::{
+        graphics::{
+            color_blend::{ColorBlendAttachmentState, ColorBlendState}, input_assembly::InputAssemblyState, multisample::MultisampleState, rasterization::RasterizationState, subpass::PipelineRenderingCreateInfo, vertex_input::{Vertex, VertexDefinition}, viewport::{Viewport, ViewportState}, GraphicsPipelineCreateInfo
+        }, layout::PipelineDescriptorSetLayoutCreateInfo, DynamicState, GraphicsPipeline, PipelineLayout, PipelineShaderStageCreateInfo
+    }, render_pass::{AttachmentLoadOp, AttachmentStoreOp}, swapchain::{
+        acquire_next_image, Surface, Swapchain, SwapchainCreateInfo, SwapchainPresentInfo
+    }, sync::{self, GpuFuture}, Validated, Version, VulkanError, VulkanLibrary
+};
+use winit::{
+    application::ApplicationHandler,
+    event::WindowEvent,
+    event_loop::{ActiveEventLoop, EventLoop},
+    window::{Window, WindowId},
+};
 
 mod camera;
 mod game_system;
@@ -156,83 +163,218 @@ fn build_scene(
     world
 }
 
-fn main() {
-    let library = VulkanLibrary::new().unwrap();
-    let event_loop = EventLoop::new();
-    let required_extensions = Surface::required_extensions(&event_loop);
+// fn main() {
+//     let library = VulkanLibrary::new().unwrap();
+//     let event_loop = EventLoop::new().unwrap();
+//     let required_extensions = Surface::required_extensions(&event_loop).unwrap();
 
-    let instance = Instance::new(
-        library,
-        InstanceCreateInfo {
-            flags: InstanceCreateFlags::ENUMERATE_PORTABILITY,
-            enabled_extensions: required_extensions,
-            ..Default::default()
-        },
-    )
-    .unwrap();
+//     let instance = Instance::new(
+//         library,
+//         InstanceCreateInfo {
+//             flags: InstanceCreateFlags::ENUMERATE_PORTABILITY,
+//             enabled_extensions: required_extensions,
+//             ..Default::default()
+//         },
+//     )
+//     .unwrap();
 
-    let window = Arc::new(WindowBuilder::new().build(&event_loop).unwrap());
+//     let window = Arc::new(WindowBuilder::new().build(&event_loop).unwrap());
 
-    let surface = Surface::from_window(instance.clone(), window).unwrap();
+//     let surface = Surface::from_window(instance.clone(), window).unwrap();
 
-    let (device, general_queue, transfer_queue) =
-        render_system::interactive_rendering::get_device_for_rendering_on(
-            instance.clone(),
+//     let (device, general_queue, transfer_queue) =
+//         render_system::interactive_rendering::get_device_for_rendering_on(
+//             instance.clone(),
+//             surface.clone(),
+//         );
+
+//     //Print some info about the device currently being used
+//     println!(
+//         "Using device: {} (type: {:?})",
+//         device.physical_device().properties().device_name,
+//         device.physical_device().properties().device_type
+//     );
+
+//     let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
+//     let command_buffer_allocator = Arc::new(StandardCommandBufferAllocator::new(
+//         device.clone(),
+//         Default::default(),
+//     ));
+//     let descriptor_set_allocator = Arc::new(StandardDescriptorSetAllocator::new(
+//         device.clone(),
+//         Default::default(),
+//     ));
+
+//     let mut start_time = std::time::Instant::now();
+//     let mut frame_count = 0;
+
+//     let mut world = build_scene(
+//         general_queue.clone(),
+//         transfer_queue.clone(),
+//         command_buffer_allocator.clone(),
+//         memory_allocator.clone(),
+//         descriptor_set_allocator.clone(),
+//         surface.clone(),
+//     );
+
+//     event_loop.set_control_flow(ControlFlow::Poll);
+
+//     event_loop
+//         .run(move |event, active_event_loop| match event {
+//             Event::WindowEvent {
+//                 event: WindowEvent::CloseRequested,
+//                 ..
+//             } => {
+//                 active_event_loop.exit();
+//             }
+//             Event::WindowEvent { event, .. } => {
+//                 world.handle_window_event(event);
+//             }
+//             Event::AboutToWait => {}
+//             _ => (),
+//         })
+//         .unwrap();
+// }
+
+fn main() -> Result<(), impl Error> {
+    let event_loop = EventLoop::new().unwrap();
+    let mut app = App::new(&event_loop);
+
+    event_loop.run_app(&mut app)
+}
+
+struct App {
+    instance: Arc<Instance>,
+    rcx: Option<RenderContext>,
+}
+
+struct RenderContext {
+    window: Arc<Window>,
+    world: GameWorld,
+    frame_count: u64,
+    start_time: std::time::Instant,
+}
+
+impl App {
+    fn new(event_loop: &EventLoop<()>) -> Self {
+        let library = VulkanLibrary::new().unwrap();
+
+        // The first step of any Vulkan program is to create an instance.
+        //
+        // When we create an instance, we have to pass a list of extensions that we want to enable.
+        //
+        // All the window-drawing functionalities are part of non-core extensions that we need to
+        // enable manually. To do so, we ask `Surface` for the list of extensions required to draw
+        // to a window.
+        let required_extensions = Surface::required_extensions(event_loop).unwrap();
+
+        // Now creating the instance.
+        let instance = Instance::new(
+            library,
+            InstanceCreateInfo {
+                // Enable enumerating devices that use non-conformant Vulkan implementations.
+                // (e.g. MoltenVK)
+                flags: InstanceCreateFlags::ENUMERATE_PORTABILITY,
+                enabled_extensions: required_extensions,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        App {
+            instance,
+            rcx: None,
+        }
+    }
+}
+
+impl ApplicationHandler for App {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        // The objective of this example is to draw a triangle on a window. To do so, we first need
+        // to create the window. We use the `WindowBuilder` from the `winit` crate to do that here.
+        //
+        // Before we can render to a window, we must first create a `vulkano::swapchain::Surface`
+        // object from it, which represents the drawable surface of a window. For that we must wrap
+        // the `winit::window::Window` in an `Arc`.
+        let window = Arc::new(
+            event_loop
+                .create_window(Window::default_attributes())
+                .unwrap(),
+        );
+
+        let surface = Surface::from_window(self.instance.clone(), window.clone()).unwrap();
+
+        let (device, general_queue, transfer_queue) =
+            render_system::interactive_rendering::get_device_for_rendering_on(
+                self.instance.clone(),
+                surface.clone(),
+            );
+
+        //Print some info about the device currently being used
+        println!(
+            "Using device: {} (type: {:?})",
+            device.physical_device().properties().device_name,
+            device.physical_device().properties().device_type
+        );
+
+        let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
+        let command_buffer_allocator = Arc::new(StandardCommandBufferAllocator::new(
+            device.clone(),
+            Default::default(),
+        ));
+        let descriptor_set_allocator = Arc::new(StandardDescriptorSetAllocator::new(
+            device.clone(),
+            Default::default(),
+        ));
+
+        let world = build_scene(
+            general_queue.clone(),
+            transfer_queue.clone(),
+            command_buffer_allocator.clone(),
+            memory_allocator.clone(),
+            descriptor_set_allocator.clone(),
             surface.clone(),
         );
 
-    //Print some info about the device currently being used
-    println!(
-        "Using device: {} (type: {:?})",
-        device.physical_device().properties().device_name,
-        device.physical_device().properties().device_type
-    );
+        self.rcx = Some(RenderContext {
+            window,
+            world,
+            frame_count: 0,
+            start_time: std::time::Instant::now(),
+        });
+    }
 
-    let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
-    let command_buffer_allocator = Arc::new(StandardCommandBufferAllocator::new(
-        device.clone(),
-        Default::default(),
-    ));
-    let descriptor_set_allocator = Arc::new(StandardDescriptorSetAllocator::new(
-        device.clone(),
-        Default::default(),
-    ));
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _window_id: WindowId,
+        event: WindowEvent,
+    ) {
+        let rcx = self.rcx.as_mut().unwrap();
 
-    let mut start_time = std::time::Instant::now();
-    let mut frame_count = 0;
-
-    let mut world = build_scene(
-        general_queue.clone(),
-        transfer_queue.clone(),
-        command_buffer_allocator.clone(),
-        memory_allocator.clone(),
-        descriptor_set_allocator.clone(),
-        surface.clone(),
-    );
-
-    event_loop.run(move |event, _, control_flow| match event {
-        Event::WindowEvent {
-            event: WindowEvent::CloseRequested,
-            ..
-        } => {
-            *control_flow = ControlFlow::Exit;
-        }
-        Event::WindowEvent { event, .. } => {
-            world.handle_window_event(event);
-        }
-        Event::RedrawEventsCleared => {
-            // print fps
-            frame_count += 1;
-            let elapsed = start_time.elapsed();
-            if elapsed.as_secs() >= 1 {
-                println!("fps: {}", frame_count);
-                frame_count = 0;
-                start_time = std::time::Instant::now();
+        match event {
+            WindowEvent::CloseRequested => {
+                event_loop.exit();
             }
+            WindowEvent::RedrawRequested => {
+                // print fps
+                rcx.frame_count += 1;
+                let elapsed = rcx.start_time.elapsed();
+                if elapsed.as_secs() >= 1 {
+                    println!("fps: {}", rcx.frame_count);
+                   rcx. frame_count = 0;
+                    rcx.start_time = std::time::Instant::now();
+                }
 
-            // game step and render
-            world.step();
+                // game step and render
+                rcx.world.step();
+            }
+            _ => rcx.world.handle_window_event(event),
         }
-        _ => (),
-    });
+    }
+
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        let rcx = self.rcx.as_mut().unwrap();
+        rcx.window.request_redraw();
+    }
 }

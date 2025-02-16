@@ -1,56 +1,49 @@
-use core::{num, panic};
-use std::{collections::HashMap, fmt::Write, hash::Hash, ops::Div, sync::Arc};
+use std::sync::Arc;
 
-use image::{buffer, RgbaImage};
-use nalgebra::{Point3, Vector2, Vector3};
+use ash::vk::Fence;
+use image::RgbaImage;
+use nalgebra::{Point3, Vector3};
+use rand::RngCore;
 use vulkano::{
-    acceleration_structure::AccelerationStructure,
+    Validated, VulkanError,
     buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer},
     command_buffer::{
-        self, allocator::StandardCommandBufferAllocator, AutoCommandBufferBuilder,
-        CommandBufferUsage, CopyBufferToImageInfo, PrimaryCommandBufferAbstract,
+        AutoCommandBufferBuilder, CommandBufferUsage, CopyBufferToImageInfo,
+        PrimaryCommandBufferAbstract, allocator::StandardCommandBufferAllocator,
     },
     descriptor_set::{
+        DescriptorBufferInfo, DescriptorSet, WriteDescriptorSet,
         allocator::StandardDescriptorSetAllocator,
         layout::{DescriptorBindingFlags, DescriptorSetLayoutCreateFlags},
-        DescriptorBufferInfo, PersistentDescriptorSet, WriteDescriptorSet,
     },
     device::{
-        physical::PhysicalDeviceType, Device, DeviceCreateInfo, DeviceExtensions, DeviceOwned,
-        Features, Queue, QueueCreateInfo, QueueFlags,
+        Device, DeviceCreateInfo, DeviceExtensions, DeviceFeatures, DeviceOwned, Queue,
+        QueueCreateInfo, QueueFlags, physical::PhysicalDeviceType,
     },
     format::Format,
-    image::{
-        sampler::Sampler, view::ImageView, Image, ImageCreateInfo, ImageFormatInfo, ImageType,
-        ImageUsage,
-    },
+    image::{Image, ImageCreateInfo, ImageType, ImageUsage, sampler::Sampler, view::ImageView},
     instance::Instance,
-    memory::{
-        self,
-        allocator::{
-            AllocationCreateInfo, MemoryAllocatePreference, MemoryTypeFilter,
-            StandardMemoryAllocator,
-        },
-    },
+    memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator},
     pipeline::{
-        compute::ComputePipelineCreateInfo, graphics::viewport::Viewport,
-        layout::PipelineDescriptorSetLayoutCreateInfo, ComputePipeline, Pipeline,
-        PipelineBindPoint, PipelineLayout, PipelineShaderStageCreateInfo,
+        ComputePipeline, Pipeline, PipelineBindPoint, PipelineLayout,
+        PipelineShaderStageCreateInfo, compute::ComputePipelineCreateInfo,
+        layout::PipelineDescriptorSetLayoutCreateInfo,
     },
     swapchain::{self, Surface, Swapchain, SwapchainCreateInfo, SwapchainPresentInfo},
-    sync::{self, GpuFuture},
-    Validated, VulkanError,
+    sync::{GpuFuture, future::FenceSignalFuture},
 };
 use winit::window::Window;
 
 use crate::camera::RenderingPreferences;
 
 use super::{
-    accumulate_shader,
     bvh::BvhNode,
-    nee_pdf_shader, raygen_shader, raytrace_shader,
-    vertex::{InstanceData, Vertex3D},
+    scene::Scene,
+    shader::{nee_pdf, outgoing_radiance, postprocess, raygen, raytrace},
+    vertex::InstanceData,
 };
+
+const MIN_IMAGE_COUNT: usize = 3;
 
 pub fn get_device_for_rendering_on(
     instance: Arc<Instance>,
@@ -63,7 +56,7 @@ pub fn get_device_for_rendering_on(
         khr_push_descriptor: true,
         ..DeviceExtensions::empty()
     };
-    let features = Features {
+    let features = DeviceFeatures {
         acceleration_structure: true,
         buffer_device_address: true,
         dynamic_rendering: true,
@@ -75,7 +68,7 @@ pub fn get_device_for_rendering_on(
         uniform_and_storage_buffer8_bit_access: true,
         runtime_descriptor_array: true,
         descriptor_binding_variable_descriptor_count: true,
-        ..Features::empty()
+        ..DeviceFeatures::empty()
     };
     let (physical_device, general_queue_family_index, transfer_queue_family_index) = instance
         .enumerate_physical_devices()
@@ -162,7 +155,7 @@ fn create_swapchain(
         device.clone(),
         surface.clone(),
         SwapchainCreateInfo {
-            min_image_count: 4,
+            min_image_count: MIN_IMAGE_COUNT as u32,
             image_format: Format::B8G8R8A8_SRGB,
             image_extent: window.inner_size().into(),
             image_usage: ImageUsage::TRANSFER_DST,
@@ -197,7 +190,9 @@ fn window_size_dependent_setup<T: BufferContents>(
                 memory_allocator.clone(),
                 BufferCreateInfo {
                     usage: if transfer_src {
-                        BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_SRC
+                        BufferUsage::STORAGE_BUFFER
+                            | BufferUsage::TRANSFER_SRC
+                            | BufferUsage::TRANSFER_DST
                     } else {
                         BufferUsage::STORAGE_BUFFER
                     },
@@ -230,7 +225,7 @@ pub struct Renderer {
     descriptor_set_allocator: Arc<StandardDescriptorSetAllocator>,
     command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
     swapchain: Arc<Swapchain>,
-    material_descriptor_set: Arc<PersistentDescriptorSet>,
+    material_descriptor_set: Arc<DescriptorSet>,
     ray_origins: Vec<Subbuffer<[f32]>>,
     ray_directions: Vec<Subbuffer<[f32]>>,
     bounce_normals: Vec<Subbuffer<[f32]>>,
@@ -242,16 +237,22 @@ pub struct Renderer {
     bounce_bsdf_pdf: Vec<Subbuffer<[f32]>>,
     // the pdf of the selected ray direction only considering light sources
     bounce_nee_pdf: Vec<Subbuffer<[f32]>>,
-    bounce_debug_info: Vec<Subbuffer<[f32]>>,
-    accumulate_target: Vec<Subbuffer<[u8]>>,
+    // the outgoing radiance at each bounce point
+    bounce_outgoing_radiance: Vec<Subbuffer<[f32]>>,
+    // the sampling pdf of the next direction
+    bounce_omega_sampling_pdf: Vec<Subbuffer<[f32]>>,
+    debug_info: Vec<Subbuffer<[f32]>>,
+    postprocess_target: Vec<Subbuffer<[u8]>>,
+    frame_finished_rendering: Vec<Option<FenceSignalFuture<Box<dyn GpuFuture>>>>,
     swapchain_images: Vec<Arc<Image>>,
     raygen_pipeline: Arc<ComputePipeline>,
     raytrace_pipeline: Arc<ComputePipeline>,
     nee_pdf_pipeline: Arc<ComputePipeline>,
-    accumulate_pipeline: Arc<ComputePipeline>,
+    outgoing_radiance_pipeline: Arc<ComputePipeline>,
+    postprocess_pipeline: Arc<ComputePipeline>,
     wdd_needs_rebuild: bool,
-    previous_frame_end: Option<Box<dyn GpuFuture>>,
-    frame_count: u32,
+    frame_count: usize,
+    rng: rand::prelude::ThreadRng,
 }
 
 fn load_textures(
@@ -261,7 +262,7 @@ fn load_textures(
     memory_allocator: Arc<StandardMemoryAllocator>,
 ) -> Vec<Arc<ImageView>> {
     let mut builder = AutoCommandBufferBuilder::primary(
-        &command_buffer_allocator,
+        command_buffer_allocator,
         queue.queue_family_index(),
         CommandBufferUsage::OneTimeSubmit,
     )
@@ -329,7 +330,6 @@ impl Renderer {
         memory_allocator: Arc<StandardMemoryAllocator>,
         descriptor_set_allocator: Arc<StandardDescriptorSetAllocator>,
         texture_atlas: Vec<(RgbaImage, RgbaImage, RgbaImage)>,
-        num_samples: u32,
     ) -> Renderer {
         let texture_atlas = texture_atlas
             .into_iter()
@@ -343,7 +343,7 @@ impl Renderer {
         let (swapchain, swapchain_images) = create_swapchain(device.clone(), surface.clone());
 
         let raygen_pipeline = {
-            let cs = raygen_shader::load(device.clone())
+            let cs = raygen::load(device.clone())
                 .unwrap()
                 .entry_point("main")
                 .unwrap();
@@ -375,7 +375,7 @@ impl Renderer {
         };
 
         let raytrace_pipeline = {
-            let cs = raytrace_shader::load(device.clone())
+            let cs = raytrace::load(device.clone())
                 .unwrap()
                 .entry_point("main")
                 .unwrap();
@@ -416,7 +416,7 @@ impl Renderer {
         };
 
         let nee_pdf_pipeline = {
-            let cs = nee_pdf_shader::load(device.clone())
+            let cs = nee_pdf::load(device.clone())
                 .unwrap()
                 .entry_point("main")
                 .unwrap();
@@ -448,8 +448,41 @@ impl Renderer {
             .unwrap()
         };
 
-        let accumulate_pipeline = {
-            let cs = accumulate_shader::load(device.clone())
+        let outgoing_radiance_pipeline = {
+            let cs = outgoing_radiance::load(device.clone())
+                .unwrap()
+                .entry_point("main")
+                .unwrap();
+
+            let stage = PipelineShaderStageCreateInfo::new(cs);
+
+            let layout = {
+                let mut layout_create_info =
+                    PipelineDescriptorSetLayoutCreateInfo::from_stages(&[stage.clone()]);
+
+                // enable push descriptor for set 0
+                layout_create_info.set_layouts[0].flags |=
+                    DescriptorSetLayoutCreateFlags::PUSH_DESCRIPTOR;
+
+                PipelineLayout::new(
+                    device.clone(),
+                    layout_create_info
+                        .into_pipeline_layout_create_info(device.clone())
+                        .unwrap(),
+                )
+                .unwrap()
+            };
+
+            ComputePipeline::new(
+                device.clone(),
+                None,
+                ComputePipelineCreateInfo::stage_layout(stage, layout),
+            )
+            .unwrap()
+        };
+
+        let postprocess_pipeline = {
+            let cs = postprocess::load(device.clone())
                 .unwrap()
                 .entry_point("main")
                 .unwrap();
@@ -490,8 +523,8 @@ impl Renderer {
 
         let sampler = Sampler::new(device.clone(), Default::default()).unwrap();
 
-        let material_descriptor_set = PersistentDescriptorSet::new_variable(
-            &descriptor_set_allocator,
+        let material_descriptor_set = DescriptorSet::new_variable(
+            descriptor_set_allocator.clone(),
             raytrace_pipeline
                 .layout()
                 .set_layouts()
@@ -507,21 +540,24 @@ impl Renderer {
         )
         .unwrap();
 
+        let frame_futures = (0..swapchain_images.len()).map(|_| None).collect();
+
         let mut renderer = Renderer {
             scale: 1,
-            num_bounces: 6,
+            num_bounces: 3,
             surface,
             command_buffer_allocator,
-            previous_frame_end: Some(sync::now(device.clone()).boxed()),
             device,
             queue,
             swapchain,
             raygen_pipeline,
             raytrace_pipeline,
             nee_pdf_pipeline,
-            accumulate_pipeline,
+            outgoing_radiance_pipeline,
+            postprocess_pipeline,
             descriptor_set_allocator,
             swapchain_images,
+            frame_finished_rendering: frame_futures,
             memory_allocator,
             wdd_needs_rebuild: false,
             material_descriptor_set,
@@ -535,8 +571,11 @@ impl Renderer {
             bounce_nee_mis_weight: vec![],
             bounce_bsdf_pdf: vec![],
             bounce_nee_pdf: vec![],
-            bounce_debug_info: vec![],
-            accumulate_target: vec![],
+            bounce_outgoing_radiance: vec![],
+            bounce_omega_sampling_pdf: vec![],
+            debug_info: vec![],
+            postprocess_target: vec![],
+            rng: rand::rng(),
         };
 
         // create buffers
@@ -560,6 +599,7 @@ impl Renderer {
 
         self.swapchain = new_swapchain;
         self.swapchain_images = new_images;
+        self.frame_finished_rendering = (0..self.swapchain_images.len()).map(|_| None).collect();
         self.create_buffers();
     }
 
@@ -620,14 +660,30 @@ impl Renderer {
             self.scale,
             1 * self.num_bounces,
         );
-        self.bounce_debug_info = window_size_dependent_setup(
+        self.bounce_outgoing_radiance = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
             true,
             self.scale,
-            4 * self.num_bounces,
+            3 * self.num_bounces,
         );
-        self.accumulate_target = window_size_dependent_setup(
+        self.bounce_omega_sampling_pdf = window_size_dependent_setup(
+            self.memory_allocator.clone(),
+            &self.swapchain_images,
+            true,
+            self.scale,
+            1 * self.num_bounces,
+        );
+        // debug info (single image)
+        self.debug_info = window_size_dependent_setup(
+            self.memory_allocator.clone(),
+            &self.swapchain_images,
+            true,
+            self.scale,
+            3,
+        );
+        // the final image
+        self.postprocess_target = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
             true,
@@ -637,24 +693,28 @@ impl Renderer {
     }
 
     fn group_count(&self, extent: &[u32; 2]) -> [u32; 3] {
-        [extent[0].div_ceil(32)*self.scale, extent[1].div_ceil(32)*self.scale, 1]
+        [
+            extent[0].div_ceil(32) * self.scale,
+            extent[1].div_ceil(32) * self.scale,
+            1,
+        ]
     }
 
     pub fn render(
         &mut self,
-        build_future: Box<dyn GpuFuture>,
-        top_level_acceleration_structure: Arc<AccelerationStructure>,
-        light_top_level_acceleration_structure: Arc<AccelerationStructure>,
-        instance_data: Subbuffer<[InstanceData]>,
-        luminance_bvh: Subbuffer<[BvhNode]>,
+        scene: &mut Scene<u32>,
         eye: Point3<f32>,
         front: Vector3<f32>,
         right: Vector3<f32>,
         up: Vector3<f32>,
         rendering_preferences: RenderingPreferences,
     ) {
-        // free memory
-        self.previous_frame_end.as_mut().unwrap().cleanup_finished();
+        let (
+            top_level_acceleration_structure,
+            light_top_level_acceleration_structure,
+            instance_data,
+            luminance_bvh,
+        ) = scene.get_tlas();
 
         // Whenever the window resizes we need to recreate everything dependent on the window size.
         // In this example that includes the swapchain, the framebuffers and the dynamic state viewport.
@@ -690,7 +750,7 @@ impl Renderer {
         }
 
         let mut builder = AutoCommandBufferBuilder::primary(
-            &self.command_buffer_allocator,
+            self.command_buffer_allocator.clone(),
             self.queue.queue_family_index(),
             CommandBufferUsage::OneTimeSubmit,
         )
@@ -700,43 +760,45 @@ impl Renderer {
         let extent = [extent_3d[0], extent_3d[1]];
         let rt_extent = [extent[0] * self.scale, extent[1] * self.scale];
 
-        builder
-            .bind_pipeline_compute(self.raygen_pipeline.clone())
-            .unwrap()
-            .push_descriptor_set(
-                PipelineBindPoint::Compute,
-                self.raygen_pipeline.layout().clone(),
-                0,
-                vec![
-                    WriteDescriptorSet::buffer(
-                        0,
-                        self.ray_origins[image_index as usize].clone(),
-                    ),
-                    WriteDescriptorSet::buffer(
-                        1,
-                        self.ray_directions[image_index as usize].clone(),
-                    ),
-                ]
-                .into(),
-            )
-            .unwrap()
-            .push_constants(
-                self.raygen_pipeline.layout().clone(),
-                0,
-                raygen_shader::PushConstants {
-                    camera: raygen_shader::Camera {
-                        eye: eye.coords,
-                        front,
-                        right,
-                        up,
-                        screen_size: rt_extent.into(),
+        unsafe {
+            builder
+                .bind_pipeline_compute(self.raygen_pipeline.clone())
+                .unwrap()
+                .push_descriptor_set(
+                    PipelineBindPoint::Compute,
+                    self.raygen_pipeline.layout().clone(),
+                    0,
+                    vec![
+                        WriteDescriptorSet::buffer(
+                            0,
+                            self.ray_origins[self.frame_count % MIN_IMAGE_COUNT].clone(),
+                        ),
+                        WriteDescriptorSet::buffer(
+                            1,
+                            self.ray_directions[self.frame_count % MIN_IMAGE_COUNT].clone(),
+                        ),
+                    ]
+                    .into(),
+                )
+                .unwrap()
+                .push_constants(
+                    self.raygen_pipeline.layout().clone(),
+                    0,
+                    raygen::PushConstants {
+                        camera: raygen::Camera {
+                            eye: eye.coords,
+                            front,
+                            right,
+                            up,
+                            screen_size: rt_extent.into(),
+                        },
+                        invocation_seed: self.rng.next_u32(),
                     },
-                    frame_seed: self.frame_count,
-                },
-            )
-            .unwrap()
-            .dispatch(self.group_count(&rt_extent))
-            .unwrap();
+                )
+                .unwrap()
+                .dispatch(self.group_count(&rt_extent))
+                .unwrap();
+        }
 
         let sect_sz = (size_of::<f32>() as u32 * rt_extent[0] * rt_extent[1]) as u64;
 
@@ -755,132 +817,134 @@ impl Renderer {
 
         // dispatch raytrace pipeline
         for bounce in 0..self.num_bounces {
+            // for bounce in 0..0 {
             let b = bounce as u64;
 
-            builder
-                .push_descriptor_set(
-                    PipelineBindPoint::Compute,
-                    self.raytrace_pipeline.layout().clone(),
-                    1,
-                    vec![
-                        WriteDescriptorSet::acceleration_structure(
-                            0,
-                            top_level_acceleration_structure.clone(),
-                        ),
-                        WriteDescriptorSet::buffer(1, instance_data.clone()),
-                        // input ray origin
-                        WriteDescriptorSet::buffer_with_range(
-                            2,
-                            DescriptorBufferInfo {
-                                buffer: self.ray_origins[image_index as usize]
-                                    .as_bytes()
-                                    .clone(),
-                                range: b * 3 * sect_sz..(b + 1) * 3 * sect_sz,
-                            },
-                        ),
-                        // input ray direction
-                        WriteDescriptorSet::buffer_with_range(
-                            3,
-                            DescriptorBufferInfo {
-                                buffer: self.ray_directions[image_index as usize]
-                                    .as_bytes()
-                                    .clone(),
-                                range: b * 3 * sect_sz..(b + 1) * 3 * sect_sz,
-                            },
-                        ),
-                        // output ray origin
-                        WriteDescriptorSet::buffer_with_range(
-                            4,
-                            DescriptorBufferInfo {
-                                buffer: self.ray_origins[image_index as usize]
-                                    .as_bytes()
-                                    .clone(),
-                                range: (b + 1) * 3 * sect_sz..(b + 2) * 3 * sect_sz,
-                            },
-                        ),
-                        // output ray direction
-                        WriteDescriptorSet::buffer_with_range(
-                            5,
-                            DescriptorBufferInfo {
-                                buffer: self.ray_directions[image_index as usize]
-                                    .as_bytes()
-                                    .clone(),
-                                range: (b + 1) * 3 * sect_sz..(b + 2) * 3 * sect_sz,
-                            },
-                        ),
-                        WriteDescriptorSet::buffer_with_range(
-                            6,
-                            DescriptorBufferInfo {
-                                buffer: self.bounce_normals[image_index as usize]
-                                    .as_bytes()
-                                    .clone(),
-                                range: b * 3 * sect_sz..(b + 1) * 3 * sect_sz,
-                            },
-                        ),
-                        WriteDescriptorSet::buffer_with_range(
-                            7,
-                            DescriptorBufferInfo {
-                                buffer: self.bounce_emissivity[image_index as usize]
-                                    .as_bytes()
-                                    .clone(),
-                                range: b * 3 * sect_sz..(b + 1) * 3 * sect_sz,
-                            },
-                        ),
-                        WriteDescriptorSet::buffer_with_range(
-                            8,
-                            DescriptorBufferInfo {
-                                buffer: self.bounce_reflectivity[image_index as usize]
-                                    .as_bytes()
-                                    .clone(),
-                                range: b * 3 * sect_sz..(b + 1) * 3 * sect_sz,
-                            },
-                        ),
-                        WriteDescriptorSet::buffer_with_range(
-                            9,
-                            DescriptorBufferInfo {
-                                buffer: self.bounce_nee_mis_weight[image_index as usize]
-                                    .as_bytes()
-                                    .clone(),
-                                range: b * sect_sz..(b + 1) * sect_sz,
-                            },
-                        ),
-                        WriteDescriptorSet::buffer_with_range(
-                            10,
-                            DescriptorBufferInfo {
-                                buffer: self.bounce_bsdf_pdf[image_index as usize]
-                                    .as_bytes()
-                                    .clone(),
-                                range: b * sect_sz..(b + 1) * sect_sz,
-                            },
-                        ),
-                        WriteDescriptorSet::buffer_with_range(
-                            11,
-                            DescriptorBufferInfo {
-                                buffer: self.bounce_debug_info[image_index as usize]
-                                    .as_bytes()
-                                    .clone(),
-                                range: b * 4 * sect_sz..(b + 1) * 4 * sect_sz,
-                            },
-                        ),
-                    ]
-                    .into(),
-                )
-                .unwrap()
-                .push_constants(
-                    self.raytrace_pipeline.layout().clone(),
-                    0,
-                    raytrace_shader::PushConstants {
-                        nee_type: rendering_preferences.nee_type,
-                        bounce: bounce,
-                        xsize: rt_extent[0],
-                        ysize: rt_extent[1],
-                        bounce_seed: self.frame_count * self.num_bounces + bounce,
-                        tl_bvh_addr: luminance_bvh.device_address().unwrap().get(),
-                    },
-                )
-                .unwrap()
-                .dispatch(self.group_count(&rt_extent))
-                .unwrap();
+            unsafe {
+                builder
+                    .push_descriptor_set(
+                        PipelineBindPoint::Compute,
+                        self.raytrace_pipeline.layout().clone(),
+                        1,
+                        vec![
+                            WriteDescriptorSet::acceleration_structure(
+                                0,
+                                top_level_acceleration_structure.clone(),
+                            ),
+                            WriteDescriptorSet::buffer(1, instance_data.clone()),
+                            // input ray origin
+                            WriteDescriptorSet::buffer_with_range(
+                                2,
+                                DescriptorBufferInfo {
+                                    buffer: self.ray_origins[self.frame_count % MIN_IMAGE_COUNT]
+                                        .as_bytes()
+                                        .clone(),
+                                    range: b * 3 * sect_sz..(b + 1) * 3 * sect_sz,
+                                },
+                            ),
+                            // input ray direction
+                            WriteDescriptorSet::buffer_with_range(
+                                3,
+                                DescriptorBufferInfo {
+                                    buffer: self.ray_directions[self.frame_count % MIN_IMAGE_COUNT]
+                                        .as_bytes()
+                                        .clone(),
+                                    range: b * 3 * sect_sz..(b + 1) * 3 * sect_sz,
+                                },
+                            ),
+                            // output ray origin
+                            WriteDescriptorSet::buffer_with_range(
+                                4,
+                                DescriptorBufferInfo {
+                                    buffer: self.ray_origins[self.frame_count % MIN_IMAGE_COUNT]
+                                        .as_bytes()
+                                        .clone(),
+                                    range: (b + 1) * 3 * sect_sz..(b + 2) * 3 * sect_sz,
+                                },
+                            ),
+                            // output ray direction
+                            WriteDescriptorSet::buffer_with_range(
+                                5,
+                                DescriptorBufferInfo {
+                                    buffer: self.ray_directions[self.frame_count % MIN_IMAGE_COUNT]
+                                        .as_bytes()
+                                        .clone(),
+                                    range: (b + 1) * 3 * sect_sz..(b + 2) * 3 * sect_sz,
+                                },
+                            ),
+                            WriteDescriptorSet::buffer_with_range(
+                                6,
+                                DescriptorBufferInfo {
+                                    buffer: self.bounce_normals[self.frame_count % MIN_IMAGE_COUNT]
+                                        .as_bytes()
+                                        .clone(),
+                                    range: b * 3 * sect_sz..(b + 1) * 3 * sect_sz,
+                                },
+                            ),
+                            WriteDescriptorSet::buffer_with_range(
+                                7,
+                                DescriptorBufferInfo {
+                                    buffer: self.bounce_emissivity
+                                        [self.frame_count % MIN_IMAGE_COUNT]
+                                        .as_bytes()
+                                        .clone(),
+                                    range: b * 3 * sect_sz..(b + 1) * 3 * sect_sz,
+                                },
+                            ),
+                            WriteDescriptorSet::buffer_with_range(
+                                8,
+                                DescriptorBufferInfo {
+                                    buffer: self.bounce_reflectivity
+                                        [self.frame_count % MIN_IMAGE_COUNT]
+                                        .as_bytes()
+                                        .clone(),
+                                    range: b * 3 * sect_sz..(b + 1) * 3 * sect_sz,
+                                },
+                            ),
+                            WriteDescriptorSet::buffer_with_range(
+                                9,
+                                DescriptorBufferInfo {
+                                    buffer: self.bounce_nee_mis_weight
+                                        [self.frame_count % MIN_IMAGE_COUNT]
+                                        .as_bytes()
+                                        .clone(),
+                                    range: b * sect_sz..(b + 1) * sect_sz,
+                                },
+                            ),
+                            WriteDescriptorSet::buffer_with_range(
+                                10,
+                                DescriptorBufferInfo {
+                                    buffer: self.bounce_bsdf_pdf
+                                        [self.frame_count % MIN_IMAGE_COUNT]
+                                        .as_bytes()
+                                        .clone(),
+                                    range: b * sect_sz..(b + 1) * sect_sz,
+                                },
+                            ),
+                            WriteDescriptorSet::buffer(
+                                11,
+                                self.debug_info[self.frame_count % MIN_IMAGE_COUNT].clone(),
+                            ),
+                        ]
+                        .into(),
+                    )
+                    .unwrap()
+                    .push_constants(
+                        self.raytrace_pipeline.layout().clone(),
+                        0,
+                        raytrace::PushConstants {
+                            nee_type: rendering_preferences.nee_type,
+                            bounce: bounce,
+                            xsize: rt_extent[0],
+                            ysize: rt_extent[1],
+                            invocation_seed: (self.frame_count as u32) * self.num_bounces + bounce,
+                            tl_bvh_addr: luminance_bvh.device_address().unwrap().get(),
+                        },
+                    )
+                    .unwrap()
+                    .dispatch(self.group_count(&rt_extent))
+                    .unwrap();
+            }
         }
 
         // bind nee pdf pipeline
@@ -891,92 +955,151 @@ impl Renderer {
 
         // dispatch nee pdf pipeline
         for bounce in 0..(self.num_bounces - 1) {
+            // for bounce in 0..0 {
             let b = bounce as u64;
-            // compute nee pdf
+            unsafe {
+                // compute nee pdf
+                builder
+                    .push_descriptor_set(
+                        PipelineBindPoint::Compute,
+                        self.nee_pdf_pipeline.layout().clone(),
+                        0,
+                        vec![
+                            WriteDescriptorSet::acceleration_structure(
+                                0,
+                                light_top_level_acceleration_structure.clone(),
+                            ),
+                            WriteDescriptorSet::buffer(1, instance_data.clone()),
+                            // input intersection normal
+                            WriteDescriptorSet::buffer_with_range(
+                                2,
+                                DescriptorBufferInfo {
+                                    buffer: self.bounce_normals[self.frame_count % MIN_IMAGE_COUNT]
+                                        .as_bytes()
+                                        .clone(),
+                                    range: (b) * 3 * sect_sz..(b + 1) * 3 * sect_sz,
+                                },
+                            ),
+                            // input intersection location
+                            WriteDescriptorSet::buffer_with_range(
+                                3,
+                                DescriptorBufferInfo {
+                                    buffer: self.ray_origins[self.frame_count % MIN_IMAGE_COUNT]
+                                        .as_bytes()
+                                        .clone(),
+                                    range: (b + 1) * 3 * sect_sz..(b + 2) * 3 * sect_sz,
+                                },
+                            ),
+                            // input intersection outgoing direction
+                            WriteDescriptorSet::buffer_with_range(
+                                4,
+                                DescriptorBufferInfo {
+                                    buffer: self.ray_directions[self.frame_count % MIN_IMAGE_COUNT]
+                                        .as_bytes()
+                                        .clone(),
+                                    range: (b + 1) * 3 * sect_sz..(b + 2) * 3 * sect_sz,
+                                },
+                            ),
+                            // input nee mis weight
+                            WriteDescriptorSet::buffer_with_range(
+                                5,
+                                DescriptorBufferInfo {
+                                    buffer: self.bounce_nee_mis_weight
+                                        [self.frame_count % MIN_IMAGE_COUNT]
+                                        .as_bytes()
+                                        .clone(),
+                                    range: b * sect_sz..(b + 1) * sect_sz,
+                                },
+                            ),
+                            // output nee pdf
+                            WriteDescriptorSet::buffer_with_range(
+                                6,
+                                DescriptorBufferInfo {
+                                    buffer: self.bounce_nee_pdf[self.frame_count % MIN_IMAGE_COUNT]
+                                        .as_bytes()
+                                        .clone(),
+                                    range: b * sect_sz..(b + 1) * sect_sz,
+                                },
+                            ),
+                        ]
+                        .into(),
+                    )
+                    .unwrap()
+                    .push_constants(
+                        self.nee_pdf_pipeline.layout().clone(),
+                        0,
+                        nee_pdf::PushConstants {
+                            nee_type: rendering_preferences.nee_type,
+                            xsize: rt_extent[0],
+                            ysize: rt_extent[1],
+                            tl_bvh_addr: luminance_bvh.device_address().unwrap().get(),
+                        },
+                    )
+                    .unwrap()
+                    .dispatch(self.group_count(&rt_extent))
+                    .unwrap();
+            }
+        }
+
+        // compute the outgoing radiance at all bounces
+        unsafe {
             builder
+                .bind_pipeline_compute(self.outgoing_radiance_pipeline.clone())
+                .unwrap()
                 .push_descriptor_set(
                     PipelineBindPoint::Compute,
-                    self.nee_pdf_pipeline.layout().clone(),
+                    self.outgoing_radiance_pipeline.layout().clone(),
                     0,
                     vec![
-                        WriteDescriptorSet::acceleration_structure(
-                            0,
-                            light_top_level_acceleration_structure.clone(),
-                        ),
-                        WriteDescriptorSet::buffer(1, instance_data.clone()),
-                        // input intersection normal
-                        WriteDescriptorSet::buffer_with_range(
-                            2,
-                            DescriptorBufferInfo {
-                                buffer: self.bounce_normals[image_index as usize]
-                                    .as_bytes()
-                                    .clone(),
-                                range: (b) * 3 * sect_sz..(b + 1) * 3 * sect_sz,
-                            },
-                        ),
-                        // input intersection location
-                        WriteDescriptorSet::buffer_with_range(
-                            3,
-                            DescriptorBufferInfo {
-                                buffer: self.ray_origins[image_index as usize]
-                                    .as_bytes()
-                                    .clone(),
-                                range: (b + 1) * 3 * sect_sz..(b + 2) * 3 * sect_sz,
-                            },
-                        ),
-                        // input intersection outgoing direction
-                        WriteDescriptorSet::buffer_with_range(
-                            4,
-                            DescriptorBufferInfo {
-                                buffer: self.ray_directions[image_index as usize]
-                                    .as_bytes()
-                                    .clone(),
-                                range: (b + 1) * 3 * sect_sz..(b + 2) * 3 * sect_sz,
-                            },
-                        ),
-                        // input nee mis weight
-                        WriteDescriptorSet::buffer_with_range(
-                            5,
-                            DescriptorBufferInfo {
-                                buffer: self.bounce_nee_mis_weight[image_index as usize]
-                                    .as_bytes()
-                                    .clone(),
-                                range: b * sect_sz..(b + 1) * sect_sz,
-                            },
-                        ),
-                        // output nee pdf
-                        WriteDescriptorSet::buffer_with_range(
-                            6,
-                            DescriptorBufferInfo {
-                                buffer: self.bounce_nee_pdf[image_index as usize]
-                                    .as_bytes()
-                                    .clone(),
-                                range: b * sect_sz..(b + 1) * sect_sz,
-                            },
-                        ),
-                        // // output debug info
-                        // WriteDescriptorSet::buffer_with_range(
-                        //     6,
-                        //     DescriptorBufferInfo {
-                        //         buffer: self.bounce_debug_info[image_index as usize]
-                        //             .as_bytes()
-                        //             .clone(),
-                        //         range: b * 4 * sect_sz..(b + 1) * 4 * sect_sz,
-                        //     },
+                        // WriteDescriptorSet::buffer(
+                        //     0,
+                        //     self.bounce_origins[self.frame_count % MIN_IMAGE_COUNT].clone(),
                         // ),
+                        WriteDescriptorSet::buffer(
+                            1,
+                            self.ray_directions[self.frame_count % MIN_IMAGE_COUNT].clone(),
+                        ),
+                        WriteDescriptorSet::buffer(
+                            2,
+                            self.bounce_emissivity[self.frame_count % MIN_IMAGE_COUNT].clone(),
+                        ),
+                        WriteDescriptorSet::buffer(
+                            3,
+                            self.bounce_reflectivity[self.frame_count % MIN_IMAGE_COUNT].clone(),
+                        ),
+                        WriteDescriptorSet::buffer(
+                            4,
+                            self.bounce_nee_mis_weight[self.frame_count % MIN_IMAGE_COUNT].clone(),
+                        ),
+                        WriteDescriptorSet::buffer(
+                            5,
+                            self.bounce_bsdf_pdf[self.frame_count % MIN_IMAGE_COUNT].clone(),
+                        ),
+                        WriteDescriptorSet::buffer(
+                            6,
+                            self.bounce_nee_pdf[self.frame_count % MIN_IMAGE_COUNT].clone(),
+                        ),
+                        WriteDescriptorSet::buffer(
+                            7,
+                            self.bounce_outgoing_radiance[self.frame_count % MIN_IMAGE_COUNT]
+                                .clone(),
+                        ),
+                        WriteDescriptorSet::buffer(
+                            8,
+                            self.bounce_omega_sampling_pdf[self.frame_count % MIN_IMAGE_COUNT]
+                                .clone(),
+                        ),
                     ]
                     .into(),
                 )
                 .unwrap()
                 .push_constants(
-                    self.nee_pdf_pipeline.layout().clone(),
+                    self.outgoing_radiance_pipeline.layout().clone(),
                     0,
-                    nee_pdf_shader::PushConstants {
-                        nee_type: rendering_preferences.nee_type,
+                    outgoing_radiance::PushConstants {
+                        num_bounces: self.num_bounces,
                         xsize: rt_extent[0],
                         ysize: rt_extent[1],
-                        bounce_seed: self.frame_count * self.num_bounces + bounce,
-                        tl_bvh_addr: luminance_bvh.device_address().unwrap().get(),
                     },
                 )
                 .unwrap()
@@ -984,106 +1107,94 @@ impl Renderer {
                 .unwrap();
         }
 
-        // accumulate samples and bounces and write to swapchain image
-        builder
-            .bind_pipeline_compute(self.accumulate_pipeline.clone())
-            .unwrap()
-            .push_descriptor_set(
-                PipelineBindPoint::Compute,
-                self.accumulate_pipeline.layout().clone(),
-                0,
-                vec![
-                    // WriteDescriptorSet::buffer(
-                    //     0,
-                    //     self.bounce_origins[image_index as usize].clone(),
-                    // ),
-                    WriteDescriptorSet::buffer(
-                        1,
-                        self.ray_directions[image_index as usize].clone(),
-                    ),
-                    WriteDescriptorSet::buffer(
-                        2,
-                        self.bounce_emissivity[image_index as usize].clone(),
-                    ),
-                    WriteDescriptorSet::buffer(
-                        3,
-                        self.bounce_reflectivity[image_index as usize].clone(),
-                    ),
-                    WriteDescriptorSet::buffer(
-                        4,
-                        self.bounce_nee_mis_weight[image_index as usize].clone(),
-                    ),
-                    WriteDescriptorSet::buffer(
-                        5,
-                        self.bounce_bsdf_pdf[image_index as usize].clone(),
-                    ),
-                    WriteDescriptorSet::buffer(
-                        6,
-                        self.bounce_nee_pdf[image_index as usize].clone(),
-                    ),
-                    // WriteDescriptorSet::buffer(
-                    //     7,
-                    //     self.bounce_debug_info[image_index as usize].clone(),
-                    // ),
-                    WriteDescriptorSet::buffer(
-                        8,
-                        self.accumulate_target[image_index as usize].clone(),
-                    ),
-                ]
-                .into(),
-            )
-            .unwrap()
-            .push_constants(
-                self.accumulate_pipeline.layout().clone(),
-                0,
-                accumulate_shader::PushConstants {
-                    debug_view: rendering_preferences.debug_view,
-                    frame: self.frame_count,
-                    srcscale: self.scale,
-                    num_bounces: self.num_bounces,
-                    xsize: extent[0],
-                    ysize: extent[1],
-                },
-            )
-            .unwrap()
-            .dispatch(self.group_count(&extent))
-            .unwrap()
-            .copy_buffer_to_image(CopyBufferToImageInfo::buffer_image(
-                self.accumulate_target[image_index as usize].clone(),
-                self.swapchain_images[image_index as usize].clone(),
-            ))
-            .unwrap();
+        // aggregate the samples and write to swapchain image
+        unsafe {
+            builder
+                .bind_pipeline_compute(self.postprocess_pipeline.clone())
+                .unwrap()
+                .push_descriptor_set(
+                    PipelineBindPoint::Compute,
+                    self.postprocess_pipeline.layout().clone(),
+                    0,
+                    vec![
+                        WriteDescriptorSet::buffer_with_range(
+                            0,
+                            DescriptorBufferInfo {
+                                buffer: self.bounce_outgoing_radiance
+                                    [self.frame_count % MIN_IMAGE_COUNT]
+                                    .as_bytes()
+                                    .clone(),
+                                range: 0 * sect_sz * 3..1 * sect_sz * 3,
+                            },
+                        ),
+                        WriteDescriptorSet::buffer(
+                            2,
+                            self.debug_info[self.frame_count % MIN_IMAGE_COUNT].clone(),
+                        ),
+                        WriteDescriptorSet::buffer(
+                            3,
+                            self.postprocess_target[self.frame_count % MIN_IMAGE_COUNT].clone(),
+                        ),
+                    ]
+                    .into(),
+                )
+                .unwrap()
+                .push_constants(
+                    self.postprocess_pipeline.layout().clone(),
+                    0,
+                    postprocess::PushConstants {
+                        debug_view: rendering_preferences.debug_view,
+                        srcscale: self.scale,
+                        dstscale: 1,
+                        xsize: extent[0],
+                        ysize: extent[1],
+                    },
+                )
+                .unwrap()
+                .dispatch(self.group_count(&extent))
+                .unwrap()
+                .copy_buffer_to_image(CopyBufferToImageInfo::buffer_image(
+                    self.postprocess_target[self.frame_count % MIN_IMAGE_COUNT].clone(),
+                    self.swapchain_images[image_index as usize].clone(),
+                ))
+                .unwrap();
+        }
 
         let command_buffer = builder.build().unwrap();
 
-        let future = self
-            .previous_frame_end
-            .take()
-            .unwrap()
-            .join(build_future)
-            .join(acquire_future)
+        let last_cycle_future = std::mem::replace(
+            &mut self.frame_finished_rendering[self.frame_count % MIN_IMAGE_COUNT],
+            None,
+        );
+
+        match last_cycle_future {
+            Some(f) => f.wait(None).unwrap(),
+            None => {}
+        }
+
+        let future = acquire_future
             .then_execute(self.queue.clone(), command_buffer)
             .unwrap()
             .then_swapchain_present(
                 self.queue.clone(),
                 SwapchainPresentInfo::swapchain_image_index(self.swapchain.clone(), image_index),
             )
+            .boxed()
             .then_signal_fence_and_flush();
 
-        match future.map_err(Validated::unwrap) {
-            Ok(future) => {
-                self.previous_frame_end = Some(future.boxed());
-            }
-            Err(VulkanError::OutOfDate) => {
-                self.wdd_needs_rebuild = true;
-                println!("swapchain out of date (at flush)");
-                self.previous_frame_end = Some(sync::now(self.device.clone()).boxed());
-            }
-            Err(e) => {
-                println!("failed to flush future: {e}");
-                self.previous_frame_end = Some(sync::now(self.device.clone()).boxed());
-            }
-        }
+        self.frame_finished_rendering[self.frame_count % MIN_IMAGE_COUNT] =
+            match future.map_err(Validated::unwrap) {
+                Ok(future) => Some(future),
+                Err(VulkanError::OutOfDate) => {
+                    self.wdd_needs_rebuild = true;
+                    println!("swapchain out of date (at flush)");
+                    None
+                }
+                Err(e) => {
+                    println!("failed to flush future: {e}");
+                    None
+                }
+            };
 
         self.frame_count = self.frame_count.wrapping_add(1);
     }

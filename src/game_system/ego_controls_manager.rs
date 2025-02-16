@@ -2,6 +2,7 @@ use std::{cell::RefCell, rc::Rc, sync::Arc, time::Instant};
 
 use nalgebra::{Point3, Vector3};
 use rapier3d::{dynamics::RigidBodyType, math::AngularInertia};
+use winit::keyboard::KeyCode;
 
 use crate::{
     camera::{InteractiveCamera, RenderingPreferences},
@@ -48,26 +49,26 @@ impl EgoControlsManager {
         match UserInputState::last_key_pressed(
             events,
             &[
-                winit::event::VirtualKeyCode::Key1,
-                winit::event::VirtualKeyCode::Key2,
-                winit::event::VirtualKeyCode::Key3,
-                winit::event::VirtualKeyCode::Key4,
-                winit::event::VirtualKeyCode::Key5,
-                winit::event::VirtualKeyCode::Key6,
-                winit::event::VirtualKeyCode::Key7,
-                winit::event::VirtualKeyCode::Key8,
-                winit::event::VirtualKeyCode::Key9,
+                KeyCode::Digit1,
+                KeyCode::Digit2,
+                KeyCode::Digit3,
+                KeyCode::Digit4,
+                KeyCode::Digit5,
+                KeyCode::Digit6,
+                KeyCode::Digit7,
+                KeyCode::Digit8,
+                KeyCode::Digit9,
             ],
         ) {
-            Some(winit::event::VirtualKeyCode::Key1) => self.selected_block_id = 0,
-            Some(winit::event::VirtualKeyCode::Key2) => self.selected_block_id = 1,
-            Some(winit::event::VirtualKeyCode::Key3) => self.selected_block_id = 2,
-            Some(winit::event::VirtualKeyCode::Key4) => self.selected_block_id = 3,
-            Some(winit::event::VirtualKeyCode::Key5) => self.selected_block_id = 4,
-            Some(winit::event::VirtualKeyCode::Key6) => self.selected_block_id = 5,
-            Some(winit::event::VirtualKeyCode::Key7) => self.selected_block_id = 6,
-            Some(winit::event::VirtualKeyCode::Key8) => self.selected_block_id = 7,
-            Some(winit::event::VirtualKeyCode::Key9) => self.selected_block_id = 8,
+            Some(KeyCode::Digit1) => self.selected_block_id = 0,
+            Some(KeyCode::Digit2) => self.selected_block_id = 1,
+            Some(KeyCode::Digit3) => self.selected_block_id = 2,
+            Some(KeyCode::Digit4) => self.selected_block_id = 3,
+            Some(KeyCode::Digit5) => self.selected_block_id = 4,
+            Some(KeyCode::Digit6) => self.selected_block_id = 5,
+            Some(KeyCode::Digit7) => self.selected_block_id = 6,
+            Some(KeyCode::Digit8) => self.selected_block_id = 7,
+            Some(KeyCode::Digit9) => self.selected_block_id = 8,
             _ => {}
         }
     }
@@ -95,7 +96,7 @@ impl Manager for EgoControlsManager {
         camera.set_root_position(ego.isometry.translation.vector.clone().cast().into());
         camera.set_root_rotation(ego.isometry.rotation.clone().cast().into());
         camera.handle_event(extent, window_events);
-        if UserInputState::key_pressed(window_events, winit::event::VirtualKeyCode::N) {
+        if UserInputState::key_pressed(window_events, KeyCode::KeyN) {
             let mut current_prefs = camera.rendering_preferences();
             current_prefs.nee_type = match current_prefs.nee_type {
                 0 => 1,
@@ -105,23 +106,36 @@ impl Manager for EgoControlsManager {
             dbg!(current_prefs.nee_type);
             camera.set_rendering_preferences(current_prefs);
         }
-        if UserInputState::key_pressed(window_events, winit::event::VirtualKeyCode::B) {
+        if UserInputState::key_pressed(window_events, KeyCode::KeyB) {
             let mut current_prefs = camera.rendering_preferences();
             current_prefs.debug_view = match current_prefs.debug_view {
                 0 => 1,
+                1 => 2,
                 _ => 0,
             };
             dbg!(current_prefs.debug_view);
             camera.set_rendering_preferences(current_prefs);
         }
 
+        if UserInputState::key_pressed(window_events, KeyCode::KeyI) {
+            let mut current_prefs = camera.rendering_preferences();
+            current_prefs.restir_spatial_iterations = match current_prefs.restir_spatial_iterations {
+                0 => 5,
+                5 => 10,
+                10 => 15,
+                15 => 20,
+                _ => 0,
+            };
+            dbg!(current_prefs.restir_spatial_iterations);
+            camera.set_rendering_preferences(current_prefs);
+        }
 
         let (cam_eye, cam_front, cam_right, cam_up) = camera.eye_front_right_up();
 
         let mut changes = vec![];
 
         // switch mode
-        if UserInputState::key_pressed(window_events, winit::event::VirtualKeyCode::Tab) {
+        if UserInputState::key_pressed(window_events, KeyCode::Tab) {
             let new_rigid_body_type = match physics_data.rigid_body_type {
                 RigidBodyType::Dynamic => RigidBodyType::KinematicVelocityBased,
                 _ => RigidBodyType::Dynamic,

@@ -40,13 +40,16 @@ pub struct RenderingPreferences {
     pub nee_type: u32, 
     // 0 == no debug view, 1 == debug view
     pub debug_view: u32,
+    // 0..10 restir spatial iterations
+    pub restir_spatial_iterations: u32,
 }
 
 impl Default for RenderingPreferences {
     fn default() -> RenderingPreferences {
         RenderingPreferences {
-            nee_type: 1,
+            nee_type: 0,
             debug_view: 0,
+            restir_spatial_iterations: 0,
         }
     }
 }

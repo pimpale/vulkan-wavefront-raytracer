@@ -19,13 +19,13 @@ layout(set = 0, binding = 1) uniform texture2D tex[];
 
 layout(set = 1, binding = 0) uniform accelerationStructureEXT top_level_acceleration_structure;
 
-layout(buffer_reference, buffer_reference_align=4, scalar) readonly buffer Vertex {
+layout(buffer_reference, buffer_reference_align=4, scalar) readonly restrict buffer Vertex {
     vec3 position;
     uint t;
     vec2 uv;
 };
 
-layout(buffer_reference, buffer_reference_align=4, scalar) readonly buffer BvhNode {
+layout(buffer_reference, buffer_reference_align=4, scalar) readonly restrict buffer BvhNode {
     uint left_node_idx;
     uint right_node_idx_or_prim_idx;
     vec3 min;
@@ -47,55 +47,55 @@ struct InstanceData {
     mat4x3 transform;
 };
 
-layout(set = 1, binding = 1, scalar) readonly buffer InstanceDataBuffer {
+layout(set = 1, binding = 1, scalar) readonly restrict buffer InstanceDataBuffer {
     InstanceData instance_data[];
 };
 
-layout(set = 1, binding = 2, scalar) readonly buffer InputsRayOrigin {
+layout(set = 1, binding = 2, scalar) readonly restrict buffer InputsRayOrigin {
     vec3 input_origin[];
 };
 
-layout(set = 1, binding = 3, scalar) readonly buffer InputsRayDirection {
+layout(set = 1, binding = 3, scalar) readonly restrict buffer InputsRayDirection {
     vec3 input_direction[];
 };
 
-layout(set = 1, binding = 4, scalar) writeonly buffer OutputsRayOrigin {
+layout(set = 1, binding = 4, scalar) writeonly restrict buffer OutputsRayOrigin {
     vec3 output_origin[];
 };
 
-layout(set = 1, binding = 5, scalar) writeonly buffer OutputsRayDirection {
+layout(set = 1, binding = 5, scalar) writeonly restrict buffer OutputsRayDirection {
     vec3 output_direction[];
 };
 
-layout(set = 1, binding = 6, scalar) writeonly buffer OutputsNormal {
+layout(set = 1, binding = 6, scalar) writeonly restrict buffer OutputsNormal {
     vec3 output_normal[];
 };
 
-layout(set = 1, binding = 7, scalar) writeonly buffer OutputsEmissivity {
+layout(set = 1, binding = 7, scalar) writeonly restrict buffer OutputsEmissivity {
     vec3 output_emissivity[];
 };
 
-layout(set = 1, binding = 8, scalar) writeonly buffer OutputsReflectivity {
+layout(set = 1, binding = 8, scalar) writeonly restrict buffer OutputsReflectivity {
     vec3 output_reflectivity[];
 };
 
-layout(set = 1, binding = 9) writeonly buffer OutputsNeeMisWeight {
+layout(set = 1, binding = 9) writeonly restrict buffer OutputsNeeMisWeight {
     float output_nee_mis_weight[];
 };
 
-layout(set = 1, binding = 10) writeonly buffer OutputsBsdfPdf {
+layout(set = 1, binding = 10) writeonly restrict buffer OutputsBsdfPdf {
     float output_bsdf_pdf[];
 };
 
-layout(set = 1, binding = 11) writeonly buffer OutputsDebugInfo {
-    vec4 output_debug_info[];
+layout(set = 1, binding = 11) writeonly restrict buffer OutputsDebugInfo {
+    vec3 output_debug_info[];
 };
 
 
 layout(push_constant, scalar) uniform PushConstants {
     uint bounce;
     uint nee_type;
-    uint bounce_seed;
+    uint invocation_seed;
     uint xsize;
     uint ysize;
     uint64_t tl_bvh_addr;
@@ -281,14 +281,23 @@ BvhTraverseResult traverseBvh(vec3 point, vec3 normal, uint seed) {
 }
 
 // returns a vector sampled from the hemisphere with positive y
+// sample is uniformly weighted
+// https://cseweb.ucsd.edu/classes/sp17/cse168-a/CSE168_08_PathTracing.pdf
+vec3 uniformSampleHemisphere(vec2 uv) {
+    float u = 2 * M_PI * uv.x;
+    float v = sqrt(max(0, 1.0 - uv.y*uv.y));
+
+    return vec3(v * cos(u), uv.y, v * sin(u));
+}
+
+// returns a vector sampled from the hemisphere with positive y
 // sample is weighted by cosine of angle between sample and y axis
 // https://cseweb.ucsd.edu/classes/sp17/cse168-a/CSE168_08_PathTracing.pdf
 vec3 cosineWeightedSampleHemisphere(vec2 uv) {
-    float z = uv.x;
-    float r = sqrt(max(0, 1.0 - z));
-    float phi = 2.0 * M_PI * uv.y;
-    
-    return vec3(r * cos(phi), sqrt(z), r * sin(phi));
+    float u = 2 * M_PI * uv.x;
+    float v = sqrt(max(0, 1.0 - uv.y));
+
+    return vec3(v * cos(u), sqrt(uv.y), v * sin(u));
 }
 
 // returns a point sampled from a triangle
@@ -322,8 +331,15 @@ IntersectionCoordinateSystem localCoordinateSystem(vec3[3] tri) {
 }
 
 // returns a vector sampled from the hemisphere defined around the coordinate system defined by normal, tangent, and bitangent
+// normal, tangent and bitangent form a right handed coordinate system
+vec3 alignedUniformSampleHemisphere(vec2 uv, IntersectionCoordinateSystem ics) {
+    vec3 hemsam = uniformSampleHemisphere(uv);
+    return normalize(hemsam.x * ics.tangent + hemsam.y * ics.normal + hemsam.z * ics.bitangent);
+}
+
+// returns a vector sampled from the hemisphere defined around the coordinate system defined by normal, tangent, and bitangent
 // normal, tangent and bitangent form a right handed coordinate system 
-vec3 alignedCosineWeightedSampleHemisphere(vec2 uv, IntersectionCoordinateSystem ics) {
+vec3 alignedCosineSampleHemisphere(vec2 uv, IntersectionCoordinateSystem ics) {
     vec3 hemsam = cosineWeightedSampleHemisphere(uv);
     return normalize(hemsam.x * ics.tangent + hemsam.y * ics.normal + hemsam.z * ics.bitangent);
 }
@@ -384,17 +400,18 @@ void main() {
             
     const vec3 origin = input_origin[bid];
     const vec3 direction = input_direction[bid];
-    const uint seed = murmur3_combine(bounce_seed, bid);
+    const uint seed = murmur3_combine(invocation_seed, bid);
 
     // return early from terminal samples (ray direction is 0, 0, 0)
-    if(length(direction) == 0.0) {
+    if(direction == vec3(0.0)) {
         output_origin[bid] = origin;
-        output_direction[bid] = direction;
+        output_direction[bid] = vec3(0.0);
+        output_normal[bid] = vec3(0.0);
         output_emissivity[bid] = vec3(0.0);
         output_reflectivity[bid] = vec3(0.0);
         output_nee_mis_weight[bid] = 0.0;
         output_bsdf_pdf[bid] = 1.0;
-        output_debug_info[bid] = vec4(0.0);
+        output_debug_info[bid] = vec3(0.0);
         return;
     }
 
@@ -402,13 +419,13 @@ void main() {
     IntersectionInfo info = getIntersectionInfo(origin, direction);
 
     if(info.miss) {
-        output_origin[bid] = origin;
+        output_origin[bid] = origin + direction * 5000.0;
         output_direction[bid] = vec3(0.0); // no direction (miss)
-        output_emissivity[bid] = vec3(20.0); // sky color
+        output_normal[bid] = vec3(0.0);
+        output_emissivity[bid] = vec3(dot(direction, vec3(0, 1, 0)) > 0.9 ? 50.0 : 0); // sky color
         output_reflectivity[bid] = vec3(0.0);
         output_nee_mis_weight[bid] = 0.0;
         output_bsdf_pdf[bid] = 1.0;
-        output_debug_info[bid] = vec4(0.0);
         return;
     }
 
@@ -486,7 +503,7 @@ void main() {
         // try traversing the bvh
         BvhTraverseResult result;
         
-        if(nee_type == 1 || (nee_type == 2 && bounce == 0)) {
+        if(nee_type == 1 || (nee_type == 2 && bounce == 1)) {
             result = traverseBvh(new_origin, ics.normal, murmur3_combine(seed, 2));
         }
         
@@ -530,8 +547,8 @@ void main() {
 
             new_direction = normalize(sampled_light_point - new_origin);
         } else {
-            // cosine weighted hemisphere sample
-            new_direction = alignedCosineWeightedSampleHemisphere(
+            // uniform sample the hemisphere (as this is better for spatial resampling)
+            new_direction = alignedUniformSampleHemisphere(
                 // random uv
                 vec2(
                     murmur3_finalizef(murmur3_combine(seed, 4)),
@@ -557,7 +574,6 @@ void main() {
     output_reflectivity[bid] = reflectivity;
     output_nee_mis_weight[bid] = light_pdf_mis_weight;
     output_bsdf_pdf[bid] = bsdf_pdf;
-    output_debug_info[bid] = vec4(0.0);
 }
 ",
 }
