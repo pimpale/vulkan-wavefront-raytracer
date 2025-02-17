@@ -94,9 +94,9 @@ pub fn generate_chunk(data: &WorldgenData, chunk_position: Point3<i32>) -> Vec<B
                 }
 
                 // add lamp
-                if x <= 0 && y <= 0 && z <= 0 {
-                    blocks[xyzidx] = lamp;
-                }
+                // if x <= 0 && y <= 0 && z <= 0 {
+                //     blocks[xyzidx] = lamp;
+                // }
             }
         }
     }

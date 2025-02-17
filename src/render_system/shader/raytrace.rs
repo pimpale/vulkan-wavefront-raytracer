@@ -503,7 +503,7 @@ void main() {
         // try traversing the bvh
         BvhTraverseResult result;
         
-        if(nee_type == 1 || (nee_type == 2 && bounce == 1)) {
+        if(nee_type == 1 || (nee_type == 2 && bounce == 0)) {
             result = traverseBvh(new_origin, ics.normal, murmur3_combine(seed, 2));
         }
         

@@ -548,7 +548,7 @@ impl Renderer {
 
         let mut renderer = Renderer {
             scale: 1,
-            num_bounces: 3,
+            num_bounces: 6,
             surface,
             command_buffer_allocator,
             device,
@@ -1144,14 +1144,14 @@ impl Renderer {
                     0,
                     postprocess::PushConstants {
                         debug_view: rendering_preferences.debug_view,
-                        srcscale: self.scale,
-                        dstscale: 1,
-                        xsize: extent[0],
-                        ysize: extent[1],
+                        srcscale: 4*self.scale,
+                        dstscale: 4,
+                        xsize: extent[0]/4,
+                        ysize: extent[1]/4,
                     },
                 )
                 .unwrap()
-                .dispatch(self.group_count(&extent))
+                .dispatch(self.group_count(&[extent[0]/4, &extent[1]/4]))
                 .unwrap();
         }
 
