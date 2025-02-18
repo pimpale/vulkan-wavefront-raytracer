@@ -12,7 +12,7 @@ vulkano_shaders::shader! {
 #define M_PI 3.1415926535897932384626433832795
 #define EPSILON_BLOCK 0.001
 
-layout(local_size_x = 32, local_size_y = 32, local_size_z = 1) in;
+layout(local_size_x = 1024, local_size_y = 1, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) uniform sampler s;
 layout(set = 0, binding = 1) uniform texture2D tex[];
@@ -59,35 +59,39 @@ layout(set = 1, binding = 3, scalar) readonly restrict buffer InputsRayDirection
     vec3 input_direction[];
 };
 
-layout(set = 1, binding = 4, scalar) writeonly restrict buffer OutputsRayOrigin {
+layout(set = 1, binding = 4, scalar) readonly restrict buffer InputsBounceIndex {
+    uint input_bounce_index[];
+};
+
+layout(set = 1, binding = 5, scalar) writeonly restrict buffer OutputsRayOrigin {
     vec3 output_origin[];
 };
 
-layout(set = 1, binding = 5, scalar) writeonly restrict buffer OutputsRayDirection {
+layout(set = 1, binding = 6, scalar) writeonly restrict buffer OutputsRayDirection {
     vec3 output_direction[];
 };
 
-layout(set = 1, binding = 6, scalar) writeonly restrict buffer OutputsNormal {
+layout(set = 1, binding = 7, scalar) writeonly restrict buffer OutputsNormal {
     vec3 output_normal[];
 };
 
-layout(set = 1, binding = 7, scalar) writeonly restrict buffer OutputsEmissivity {
+layout(set = 1, binding = 8, scalar) writeonly restrict buffer OutputsEmissivity {
     vec3 output_emissivity[];
 };
 
-layout(set = 1, binding = 8, scalar) writeonly restrict buffer OutputsReflectivity {
+layout(set = 1, binding = 9, scalar) writeonly restrict buffer OutputsReflectivity {
     vec3 output_reflectivity[];
 };
 
-layout(set = 1, binding = 9) writeonly restrict buffer OutputsNeeMisWeight {
+layout(set = 1, binding = 10) writeonly restrict buffer OutputsNeeMisWeight {
     float output_nee_mis_weight[];
 };
 
-layout(set = 1, binding = 10) writeonly restrict buffer OutputsBsdfPdf {
+layout(set = 1, binding = 11) writeonly restrict buffer OutputsBsdfPdf {
     float output_bsdf_pdf[];
 };
 
-layout(set = 1, binding = 11) writeonly restrict buffer OutputsDebugInfo {
+layout(set = 1, binding = 12) writeonly restrict buffer OutputsDebugInfo {
     vec3 output_debug_info[];
 };
 
@@ -389,15 +393,13 @@ IntersectionInfo getIntersectionInfo(vec3 origin, vec3 direction) {
 
 void main() {
     // return early if we are out of bounds
-    if(gl_GlobalInvocationID.x >= xsize || gl_GlobalInvocationID.y >= ysize) {
+    if(gl_GlobalInvocationID.x >= xsize * ysize) {
         return;
     }
     
     // tensor layout: [y, x, channel]
-    const uint bid =  
-              gl_GlobalInvocationID.y   * xsize 
-            + gl_GlobalInvocationID.x;
-            
+    const uint bid = input_bounce_index[gl_GlobalInvocationID.x];
+    
     const vec3 origin = input_origin[bid];
     const vec3 direction = input_direction[bid];
     const uint seed = murmur3_combine(invocation_seed, bid);

@@ -39,7 +39,7 @@ use crate::camera::RenderingPreferences;
 use super::{
     bvh::BvhNode,
     scene::Scene,
-    shader::{nee_pdf, outgoing_radiance, postprocess, raygen, raytrace},
+    shader::{compact, nee_pdf, outgoing_radiance, postprocess, raygen, raytrace},
     vertex::InstanceData,
 };
 
@@ -228,6 +228,7 @@ pub struct Renderer {
     material_descriptor_set: Arc<DescriptorSet>,
     ray_origins: Vec<Subbuffer<[f32]>>,
     ray_directions: Vec<Subbuffer<[f32]>>,
+    bounce_indices: Vec<Subbuffer<[u32]>>,
     bounce_normals: Vec<Subbuffer<[f32]>>,
     bounce_emissivity: Vec<Subbuffer<[f32]>>,
     bounce_reflectivity: Vec<Subbuffer<[f32]>>,
@@ -246,6 +247,7 @@ pub struct Renderer {
     swapchain_images: Vec<Arc<Image>>,
     swapchain_image_views: Vec<Arc<ImageView>>,
     raygen_pipeline: Arc<ComputePipeline>,
+    compact_pipeline: Arc<ComputePipeline>,
     raytrace_pipeline: Arc<ComputePipeline>,
     nee_pdf_pipeline: Arc<ComputePipeline>,
     outgoing_radiance_pipeline: Arc<ComputePipeline>,
@@ -419,6 +421,39 @@ impl Renderer {
             .unwrap()
         };
 
+        let compact_pipeline = {
+            let cs = compact::load(device.clone())
+                .unwrap()
+                .entry_point("main")
+                .unwrap();
+
+            let stage = PipelineShaderStageCreateInfo::new(cs);
+
+            let layout = {
+                let mut layout_create_info =
+                    PipelineDescriptorSetLayoutCreateInfo::from_stages(&[stage.clone()]);
+
+                // enable push descriptor for set 0
+                layout_create_info.set_layouts[0].flags |=
+                    DescriptorSetLayoutCreateFlags::PUSH_DESCRIPTOR;
+
+                PipelineLayout::new(
+                    device.clone(),
+                    layout_create_info
+                        .into_pipeline_layout_create_info(device.clone())
+                        .unwrap(),
+                )
+                .unwrap()
+            };
+
+            ComputePipeline::new(
+                device.clone(),
+                None,
+                ComputePipelineCreateInfo::stage_layout(stage, layout),
+            )
+            .unwrap()
+        };
+
         let nee_pdf_pipeline = {
             let cs = nee_pdf::load(device.clone())
                 .unwrap()
@@ -556,6 +591,7 @@ impl Renderer {
             swapchain,
             raygen_pipeline,
             raytrace_pipeline,
+            compact_pipeline,
             nee_pdf_pipeline,
             outgoing_radiance_pipeline,
             postprocess_pipeline,
@@ -570,6 +606,7 @@ impl Renderer {
             // buffers (to be created)
             ray_origins: vec![],
             ray_directions: vec![],
+            bounce_indices: vec![],
             bounce_normals: vec![],
             bounce_emissivity: vec![],
             bounce_reflectivity: vec![],
@@ -625,6 +662,13 @@ impl Renderer {
             true,
             self.scale,
             3 * (self.num_bounces + 1),
+        );
+        self.bounce_indices = window_size_dependent_setup(
+            self.memory_allocator.clone(),
+            &self.swapchain_images,
+            true,
+            self.scale,
+            1 * self.num_bounces,
         );
         self.bounce_normals = window_size_dependent_setup(
             self.memory_allocator.clone(),
@@ -692,7 +736,15 @@ impl Renderer {
         );
     }
 
-    fn group_count(&self, extent: &[u32; 2]) -> [u32; 3] {
+    fn group_count_1d(&self, extent: &[u32; 2]) -> [u32; 3] {
+        [
+            (extent[0] * extent[1] * self.scale * self.scale).div_ceil(1024),
+            1,
+            1,
+        ]
+    }
+
+    fn group_count_2d(&self, extent: &[u32; 2]) -> [u32; 3] {
         [
             extent[0].div_ceil(32) * self.scale,
             extent[1].div_ceil(32) * self.scale,
@@ -777,6 +829,10 @@ impl Renderer {
                             1,
                             self.ray_directions[self.frame_count % MIN_IMAGE_COUNT].clone(),
                         ),
+                        WriteDescriptorSet::buffer(
+                            2,
+                            self.bounce_indices[self.frame_count % MIN_IMAGE_COUNT].clone(),
+                        ),
                     ]
                     .into(),
                 )
@@ -796,24 +852,11 @@ impl Renderer {
                     },
                 )
                 .unwrap()
-                .dispatch(self.group_count(&rt_extent))
+                .dispatch(self.group_count_2d(&rt_extent))
                 .unwrap();
         }
 
         let sect_sz = (size_of::<f32>() as u32 * rt_extent[0] * rt_extent[1]) as u64;
-
-        // bind raytrace pipeline
-        builder
-            .bind_pipeline_compute(self.raytrace_pipeline.clone())
-            .unwrap()
-            // bind material descriptor set
-            .bind_descriptor_sets(
-                PipelineBindPoint::Compute,
-                self.raytrace_pipeline.layout().clone(),
-                0,
-                self.material_descriptor_set.clone(),
-            )
-            .unwrap();
 
         // dispatch raytrace pipeline
         for bounce in 0..self.num_bounces {
@@ -822,6 +865,16 @@ impl Renderer {
 
             unsafe {
                 builder
+                    .bind_pipeline_compute(self.raytrace_pipeline.clone())
+                    .unwrap()
+                    // bind material descriptor set
+                    .bind_descriptor_sets(
+                        PipelineBindPoint::Compute,
+                        self.raytrace_pipeline.layout().clone(),
+                        0,
+                        self.material_descriptor_set.clone(),
+                    )
+                    .unwrap()
                     .push_descriptor_set(
                         PipelineBindPoint::Compute,
                         self.raytrace_pipeline.layout().clone(),
@@ -852,9 +905,19 @@ impl Renderer {
                                     range: b * 3 * sect_sz..(b + 1) * 3 * sect_sz,
                                 },
                             ),
-                            // output ray origin
+                            // input bounce index
                             WriteDescriptorSet::buffer_with_range(
                                 4,
+                                DescriptorBufferInfo {
+                                    buffer: self.bounce_indices[self.frame_count % MIN_IMAGE_COUNT]
+                                        .as_bytes()
+                                        .clone(),
+                                    range: b * sect_sz..(b + 1) * sect_sz,
+                                },
+                            ),
+                            // output ray origin
+                            WriteDescriptorSet::buffer_with_range(
+                                5,
                                 DescriptorBufferInfo {
                                     buffer: self.ray_origins[self.frame_count % MIN_IMAGE_COUNT]
                                         .as_bytes()
@@ -864,7 +927,7 @@ impl Renderer {
                             ),
                             // output ray direction
                             WriteDescriptorSet::buffer_with_range(
-                                5,
+                                6,
                                 DescriptorBufferInfo {
                                     buffer: self.ray_directions[self.frame_count % MIN_IMAGE_COUNT]
                                         .as_bytes()
@@ -873,7 +936,7 @@ impl Renderer {
                                 },
                             ),
                             WriteDescriptorSet::buffer_with_range(
-                                6,
+                                7,
                                 DescriptorBufferInfo {
                                     buffer: self.bounce_normals[self.frame_count % MIN_IMAGE_COUNT]
                                         .as_bytes()
@@ -882,7 +945,7 @@ impl Renderer {
                                 },
                             ),
                             WriteDescriptorSet::buffer_with_range(
-                                7,
+                                8,
                                 DescriptorBufferInfo {
                                     buffer: self.bounce_emissivity
                                         [self.frame_count % MIN_IMAGE_COUNT]
@@ -892,7 +955,7 @@ impl Renderer {
                                 },
                             ),
                             WriteDescriptorSet::buffer_with_range(
-                                8,
+                                9,
                                 DescriptorBufferInfo {
                                     buffer: self.bounce_reflectivity
                                         [self.frame_count % MIN_IMAGE_COUNT]
@@ -902,7 +965,7 @@ impl Renderer {
                                 },
                             ),
                             WriteDescriptorSet::buffer_with_range(
-                                9,
+                                10,
                                 DescriptorBufferInfo {
                                     buffer: self.bounce_nee_mis_weight
                                         [self.frame_count % MIN_IMAGE_COUNT]
@@ -912,7 +975,7 @@ impl Renderer {
                                 },
                             ),
                             WriteDescriptorSet::buffer_with_range(
-                                10,
+                                11,
                                 DescriptorBufferInfo {
                                     buffer: self.bounce_bsdf_pdf
                                         [self.frame_count % MIN_IMAGE_COUNT]
@@ -922,7 +985,7 @@ impl Renderer {
                                 },
                             ),
                             WriteDescriptorSet::buffer(
-                                11,
+                                12,
                                 self.debug_info[self.frame_count % MIN_IMAGE_COUNT].clone(),
                             ),
                         ]
@@ -942,8 +1005,59 @@ impl Renderer {
                         },
                     )
                     .unwrap()
-                    .dispatch(self.group_count(&rt_extent))
+                    .dispatch(self.group_count_1d(&rt_extent))
                     .unwrap();
+            }
+
+            // this compacts the bounce indices
+            if bounce != self.num_bounces - 1 {
+                unsafe {
+                    builder
+                        .bind_pipeline_compute(self.compact_pipeline.clone())
+                        .unwrap()
+                        .push_descriptor_set(
+                            PipelineBindPoint::Compute,
+                            self.compact_pipeline.layout().clone(),
+                            0,
+                            vec![
+                                // input bounce index
+                                WriteDescriptorSet::buffer_with_range(
+                                    0,
+                                    DescriptorBufferInfo {
+                                        buffer: self.bounce_indices
+                                            [self.frame_count % MIN_IMAGE_COUNT]
+                                            .as_bytes()
+                                            .clone(),
+                                        range: b * sect_sz..(b + 1) * sect_sz,
+                                    },
+                                ),
+                                // output bounce index
+                                WriteDescriptorSet::buffer_with_range(
+                                    1,
+                                    DescriptorBufferInfo {
+                                        buffer: self.bounce_indices
+                                            [self.frame_count % MIN_IMAGE_COUNT]
+                                            .as_bytes()
+                                            .clone(),
+                                        range: (b + 1) * sect_sz..(b + 2) * sect_sz,
+                                    },
+                                ),
+                            ]
+                            .into(),
+                        )
+                        .unwrap()
+                        .push_constants(
+                            self.compact_pipeline.layout().clone(),
+                            0,
+                            compact::PushConstants {
+                                xsize: rt_extent[0],
+                                ysize: rt_extent[1],
+                            },
+                        )
+                        .unwrap()
+                        .dispatch(self.group_count_1d(&rt_extent))
+                        .unwrap();
+                }
             }
         }
 
@@ -1036,7 +1150,7 @@ impl Renderer {
                         },
                     )
                     .unwrap()
-                    .dispatch(self.group_count(&rt_extent))
+                    .dispatch(self.group_count_2d(&rt_extent))
                     .unwrap();
             }
         }
@@ -1103,7 +1217,7 @@ impl Renderer {
                     },
                 )
                 .unwrap()
-                .dispatch(self.group_count(&rt_extent))
+                .dispatch(self.group_count_2d(&rt_extent))
                 .unwrap();
         }
 
@@ -1144,14 +1258,14 @@ impl Renderer {
                     0,
                     postprocess::PushConstants {
                         debug_view: rendering_preferences.debug_view,
-                        srcscale: 4*self.scale,
+                        srcscale: 4 * self.scale,
                         dstscale: 4,
-                        xsize: extent[0]/4,
-                        ysize: extent[1]/4,
+                        xsize: extent[0] / 4,
+                        ysize: extent[1] / 4,
                     },
                 )
                 .unwrap()
-                .dispatch(self.group_count(&[extent[0]/4, &extent[1]/4]))
+                .dispatch(self.group_count_2d(&[extent[0] / 4, &extent[1] / 4]))
                 .unwrap();
         }
 

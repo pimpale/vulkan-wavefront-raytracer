@@ -17,6 +17,10 @@ layout(set = 0, binding = 1, scalar) writeonly restrict buffer OutputsDirection 
     vec3 output_direction[];
 };
 
+layout(set = 0, binding = 2, scalar) writeonly restrict buffer OutputsBounceIndices {
+    uint output_bounce_indices[];
+};
+
 struct Camera {
     vec3 eye;
     vec3 front;
@@ -108,6 +112,7 @@ void main() {
 
     output_origin[bid] = camera.eye;
     output_direction[bid] = normalize((uv.x + jitter.x) * camera.right * aspect + (uv.y + jitter.y) * camera.up + camera.front);
+    output_bounce_indices[bid] = gl_GlobalInvocationID.y * xsize + gl_GlobalInvocationID.x;
 }
 ",
 }
