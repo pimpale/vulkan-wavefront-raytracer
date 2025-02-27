@@ -550,7 +550,7 @@ void main() {
             new_direction = normalize(sampled_light_point - new_origin);
         } else {
             // uniform sample the hemisphere (as this is better for spatial resampling)
-            new_direction = alignedUniformSampleHemisphere(
+            new_direction = alignedCosineSampleHemisphere(
                 // random uv
                 vec2(
                     murmur3_finalizef(murmur3_combine(seed, 4)),

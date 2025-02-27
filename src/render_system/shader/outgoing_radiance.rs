@@ -78,9 +78,8 @@ void main() {
         float nee_pdf = input_nee_pdf[bid];
         float nee_mis_weight = input_nee_mis_weight[bid];
         // this is our sampling distribution: 
-        // mis_weight proportion of the time, we sample from the light source, and 1-mis_weight proportion of the time, we sample from a uniform distribution
-        float bsdf_sampling_pdf = 1 / (2 * M_PI);
-        float q_omega = nee_pdf * nee_mis_weight + (1.0 - nee_mis_weight) * bsdf_sampling_pdf;
+        // mis_weight proportion of the time, we sample from the light source, and 1-mis_weight proportion of the time, we sample from the bsdf pdf
+        float q_omega = nee_pdf * nee_mis_weight + (1.0 - nee_mis_weight) * bsdf_pdf;
         // this is the distribution we are trying to compute the expectation over
         float p_omega = bsdf_pdf;
         float reweighting_factor = p_omega / q_omega;

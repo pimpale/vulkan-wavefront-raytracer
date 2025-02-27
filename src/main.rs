@@ -1,4 +1,3 @@
-#![feature(array_chunks)]
 use std::{error::Error, sync::Arc};
 
 use game_system::game_world::{EntityCreationData, EntityPhysicsData, GameWorld};
@@ -15,6 +14,7 @@ use vulkano::{
 };
 use winit::{
     application::ApplicationHandler,
+    dpi::PhysicalSize,
     event::WindowEvent,
     event_loop::{ActiveEventLoop, EventLoop},
     window::{Window, WindowId},
@@ -220,7 +220,11 @@ impl ApplicationHandler for App {
         // the `winit::window::Window` in an `Arc`.
         let window = Arc::new(
             event_loop
-                .create_window(Window::default_attributes())
+                .create_window(
+                    Window::default_attributes()
+                        .with_title("FLOATING")
+                        .with_inner_size(PhysicalSize::new(1920, 1080)),
+                )
                 .unwrap(),
         );
 
