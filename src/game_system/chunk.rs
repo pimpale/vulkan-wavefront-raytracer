@@ -76,11 +76,12 @@ pub fn generate_chunk(data: &WorldgenData, chunk_position: Point3<i32>) -> Vec<B
                 let wx = x as f64 + chunk_offset[0] as f64;
                 let wy = y as f64 + chunk_offset[1] as f64;
                 let wz = z as f64 + chunk_offset[2] as f64;
-                let val_here = noise.get([wx / scale1, wy / scale1, wz / scale1]) - wy / 500.0;
+                let val_here = noise.get([wx / scale1, wy / scale1, wz / scale1]) - wy / 50000.0;
+                let awy = wy + 1.0;
                 let val_above = data
                     .noise
-                    .get([wx / scale1, (wy + 1.0) / scale1, wz / scale1])
-                    - (wy + 1.0) / 500.0;
+                    .get([wx / scale1, awy / scale1, wz / scale1])
+                    - awy / 50000.0;
 
                 let thresh = 0.2;
                 if val_here > thresh {
@@ -97,6 +98,10 @@ pub fn generate_chunk(data: &WorldgenData, chunk_position: Point3<i32>) -> Vec<B
                 // if x <= 0 && y <= 0 && z <= 0 {
                 //     blocks[xyzidx] = lamp;
                 // }
+                // add world central lamp
+                if wx > -3.0 && wx < 3.0 && wy > -3.0 && wy < 3.0 && wz > -3.0 && wz < 3.0 {
+                        blocks[xyzidx] = lamp;
+                }
             }
         }
     }

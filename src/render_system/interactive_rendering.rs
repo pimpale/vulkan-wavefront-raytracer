@@ -228,6 +228,9 @@ pub struct Renderer {
     material_descriptor_set: Arc<DescriptorSet>,
     ray_origins: Vec<Subbuffer<[f32]>>,
     ray_directions: Vec<Subbuffer<[f32]>>,
+    // used to sort the bounces
+    ray_keys: Vec<Subbuffer<[u32]>>,
+    // each thread looks up the memory location of the bounce in the this array
     bounce_indices: Vec<Subbuffer<[u32]>>,
     bounce_normals: Vec<Subbuffer<[f32]>>,
     bounce_emissivity: Vec<Subbuffer<[f32]>>,
@@ -606,6 +609,7 @@ impl Renderer {
             // buffers (to be created)
             ray_origins: vec![],
             ray_directions: vec![],
+            ray_keys: vec![],
             bounce_indices: vec![],
             bounce_normals: vec![],
             bounce_emissivity: vec![],
@@ -662,6 +666,13 @@ impl Renderer {
             true,
             self.scale,
             3 * (self.num_bounces + 1),
+        );
+        self.bounce_indices = window_size_dependent_setup(
+            self.memory_allocator.clone(),
+            &self.swapchain_images,
+            true,
+            self.scale,
+            1 * (self.num_bounces + 1),
         );
         self.bounce_indices = window_size_dependent_setup(
             self.memory_allocator.clone(),
