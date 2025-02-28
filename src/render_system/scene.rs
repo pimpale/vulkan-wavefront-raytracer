@@ -549,6 +549,13 @@ impl SceneUploader {
             return SceneUploadedObjectHandle::Empty;
         }
 
+        let mut transfer_command_buffer = AutoCommandBufferBuilder::primary(
+            self.command_buffer_allocator.clone(),
+            self.transfer_queue.queue_family_index(),
+            CommandBufferUsage::OneTimeSubmit,
+        )
+        .unwrap();
+
         // check that the number of vertexes is a multiple of 3
         assert!(vertexes.len() % 3 == 0);
 
@@ -569,50 +576,6 @@ impl SceneUploader {
                 prim_index_ids.push(i as u32);
             }
         }
-
-        let vertex_dst_buffer: Subbuffer<[Vertex3D]> = Buffer::new_slice(
-            self.memory_allocator.clone(),
-            BufferCreateInfo {
-                usage: BufferUsage::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY
-                    | BufferUsage::SHADER_DEVICE_ADDRESS
-                    | BufferUsage::TRANSFER_DST,
-                ..Default::default()
-            },
-            AllocationCreateInfo {
-                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
-                ..Default::default()
-            },
-            vertexes.len() as u64,
-        )
-        .unwrap();
-
-        let vertex_src_buffer = Buffer::from_iter(
-            self.memory_allocator.clone(),
-            BufferCreateInfo {
-                usage: BufferUsage::TRANSFER_SRC,
-                ..Default::default()
-            },
-            AllocationCreateInfo {
-                memory_type_filter: MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                ..Default::default()
-            },
-            vertexes.clone(),
-        )
-        .unwrap();
-
-        let mut transfer_command_buffer = AutoCommandBufferBuilder::primary(
-            self.command_buffer_allocator.clone(),
-            self.transfer_queue.queue_family_index(),
-            CommandBufferUsage::OneTimeSubmit,
-        )
-        .unwrap();
-
-        transfer_command_buffer
-            .copy_buffer(CopyBufferInfo::buffers(
-                vertex_src_buffer.clone(),
-                vertex_dst_buffer.clone(),
-            ))
-            .unwrap();
 
         let (light_bl_bvh_buffer, light_vertex_buffer, power, light_aabb) = if prim_index_ids.len()
             > 0
@@ -705,6 +668,43 @@ impl SceneUploader {
         } else {
             (None, None, 0.0, Aabb::Empty)
         };
+
+        let vertex_dst_buffer: Subbuffer<[Vertex3D]> = Buffer::new_slice(
+            self.memory_allocator.clone(),
+            BufferCreateInfo {
+                usage: BufferUsage::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY
+                    | BufferUsage::SHADER_DEVICE_ADDRESS
+                    | BufferUsage::TRANSFER_DST,
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
+                ..Default::default()
+            },
+            vertexes.len() as u64,
+        )
+        .unwrap();
+
+        let vertex_src_buffer = Buffer::from_iter(
+            self.memory_allocator.clone(),
+            BufferCreateInfo {
+                usage: BufferUsage::TRANSFER_SRC,
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                ..Default::default()
+            },
+            vertexes,
+        )
+        .unwrap();
+
+        transfer_command_buffer
+            .copy_buffer(CopyBufferInfo::buffers(
+                vertex_src_buffer.clone(),
+                vertex_dst_buffer.clone(),
+            ))
+            .unwrap();
 
         transfer_command_buffer
             .build()

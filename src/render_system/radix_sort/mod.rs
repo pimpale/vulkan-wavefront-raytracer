@@ -229,9 +229,7 @@ impl Sorter {
         queue: Arc<Queue>,
         element_count: u32,
         keys_buffer: Subbuffer<[u32]>,
-        keys_offset: u64,
         storage_buffer: Subbuffer<[u32]>,
-        storage_offset: u64,
     ) -> Box<dyn GpuFuture> {
         self.gpu_sort(
             previous_future,
@@ -254,24 +252,17 @@ impl Sorter {
         queue: Arc<Queue>,
         element_count: u32,
         keys_buffer: Subbuffer<[u32]>,
-        keys_offset: u64,
         values_buffer: Subbuffer<[u32]>,
-        values_offset: u64,
         storage_buffer: Subbuffer<[u32]>,
-        storage_offset: u64,
     ) -> Box<dyn GpuFuture> {
         self.gpu_sort(
             previous_future,
             queue,
             element_count,
             None,
-            0,
             keys_buffer,
-            keys_offset,
             Some(values_buffer),
-            values_offset,
             storage_buffer,
-            storage_offset,
         )
     }
 
@@ -282,13 +273,9 @@ impl Sorter {
         queue: Arc<Queue>,
         element_count: u32,
         indirect_buffer: Option<Subbuffer<[u32]>>,
-        indirect_offset: u64,
         keys_buffer: Subbuffer<[u32]>,
-        keys_offset: u64,
         values_buffer: Option<Subbuffer<[u32]>>,
-        values_offset: u64,
         storage_buffer: Subbuffer<[u32]>,
-        storage_offset: u64,
     ) -> Box<dyn GpuFuture> {
         let partition_count = if indirect_buffer.is_some() {
             element_count.div_ceil(PARTITION_SIZE)
@@ -296,7 +283,6 @@ impl Sorter {
             element_count.div_ceil(PARTITION_SIZE)
         };
 
-        let element_count_size = std::mem::size_of::<u32>() as u64;
         let histogram_size = histogram_size(element_count);
         let inout_size = inout_size(element_count);
 
@@ -326,7 +312,7 @@ impl Sorter {
             let element_count_bytes = element_count.to_ne_bytes();
             builder
                 .update_buffer(
-                    storage_buffer.clone(),
+                    storage_buffer.slice(element_count_offset..(element_count_offset + std::mem::size_of::<u32>() as u64)),
                     element_count_offset,
                     &element_count_bytes,
                 )
