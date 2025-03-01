@@ -223,7 +223,7 @@ impl ApplicationHandler for App {
                 .create_window(
                     Window::default_attributes()
                         .with_title("FLOATING")
-                        .with_inner_size(PhysicalSize::new(1920/2, 1080/2)),
+                        .with_inner_size(PhysicalSize::new(1920, 1080)),
                 )
                 .unwrap(),
         );

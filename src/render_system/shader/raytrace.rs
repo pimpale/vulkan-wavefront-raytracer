@@ -8,6 +8,7 @@ vulkano_shaders::shader! {
 #extension GL_EXT_buffer_reference2: require
 #extension GL_EXT_shader_explicit_arithmetic_types_int64: require
 #extension GL_EXT_nonuniform_qualifier: require
+#extension GL_KHR_shader_subgroup_basic: require
 
 #define M_PI 3.1415926535897932384626433832795
 #define EPSILON_BLOCK 0.001
@@ -83,15 +84,15 @@ layout(set = 1, binding = 9, scalar) writeonly restrict buffer OutputsReflectivi
     vec3 output_reflectivity[];
 };
 
-layout(set = 1, binding = 10) writeonly restrict buffer OutputsNeeMisWeight {
+layout(set = 1, binding = 10, scalar) writeonly restrict buffer OutputsNeeMisWeight {
     float output_nee_mis_weight[];
 };
 
-layout(set = 1, binding = 11) writeonly restrict buffer OutputsBsdfPdf {
+layout(set = 1, binding = 11, scalar) writeonly restrict buffer OutputsBsdfPdf {
     float output_bsdf_pdf[];
 };
 
-layout(set = 1, binding = 12) writeonly restrict buffer OutputsDebugInfo {
+layout(set = 1, binding = 12, scalar) writeonly restrict buffer OutputsDebugInfo {
     vec3 output_debug_info[];
 };
 
@@ -404,6 +405,11 @@ void main() {
     const vec3 direction = input_direction[bid];
     const uint seed = murmur3_combine(invocation_seed, bid);
 
+    // debug info
+    if(bounce == 0) {
+        output_debug_info[bid] = vec3(float(gl_SubgroupInvocationID)/32);
+    }
+
     // return early from terminal samples (ray direction is 0, 0, 0)
     if(direction == vec3(0.0)) {
         output_origin[bid] = origin;
@@ -413,7 +419,6 @@ void main() {
         output_reflectivity[bid] = vec3(0.0);
         output_nee_mis_weight[bid] = 0.0;
         output_bsdf_pdf[bid] = 1.0;
-        output_debug_info[bid] = vec3(0.0);
         return;
     }
 

@@ -823,6 +823,17 @@ impl Renderer {
         let extent = [extent_3d[0], extent_3d[1]];
         let rt_extent = [extent[0] * self.scale, extent[1] * self.scale];
 
+        // blank the debug info buffer
+        builder
+            .fill_buffer(
+                self.debug_info[self.frame_count % MIN_IMAGE_COUNT]
+                    .clone()
+                    .reinterpret::<[u32]>(),
+                0,
+            )
+            .unwrap();
+
+        // dispatch raygen pipeline
         unsafe {
             builder
                 .bind_pipeline_compute(self.raygen_pipeline.clone())
@@ -1233,6 +1244,7 @@ impl Renderer {
         }
 
         // aggregate the samples and write to swapchain image
+        let poolsize = 1;
         unsafe {
             builder
                 .bind_pipeline_compute(self.postprocess_pipeline.clone())
@@ -1269,14 +1281,14 @@ impl Renderer {
                     0,
                     postprocess::PushConstants {
                         debug_view: rendering_preferences.debug_view,
-                        srcscale: 4 * self.scale,
-                        dstscale: 4,
-                        xsize: extent[0] / 4,
-                        ysize: extent[1] / 4,
+                        srcscale: poolsize * self.scale,
+                        dstscale: poolsize,
+                        xsize: extent[0] / poolsize,
+                        ysize: extent[1] / poolsize,
                     },
                 )
                 .unwrap()
-                .dispatch(self.group_count_2d(&[extent[0] / 4, &extent[1] / 4]))
+                .dispatch(self.group_count_2d(&[extent[0] / poolsize, &extent[1] / poolsize]))
                 .unwrap();
         }
 
