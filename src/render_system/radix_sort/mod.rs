@@ -1,8 +1,8 @@
 // Source:
 // https://github.com/jaesung-cs/vulkan_radix_sort
 
+use std::mem::size_of;
 use std::sync::Arc;
-
 use vulkano::{
     buffer::{BufferUsage, Subbuffer},
     command_buffer::{
@@ -35,11 +35,10 @@ const PARTITION_SIZE: u32 = PARTITION_DIVISION * WORKGROUP_SIZE;
 
 fn histogram_size(element_count: u32) -> u64 {
     (1 + 4 * RADIX + element_count.div_ceil(PARTITION_SIZE) * RADIX) as u64
-        * std::mem::size_of::<u32>() as u64
 }
 
 fn inout_size(element_count: u32) -> u64 {
-    element_count as u64 * std::mem::size_of::<u32>() as u64
+    element_count as u64
 }
 
 // Sorter struct to hold all necessary objects
@@ -186,7 +185,7 @@ impl Sorter {
     }
 
     pub fn get_storage_requirements(&self, max_element_count: u32) -> SorterStorageRequirements {
-        let element_count_size = std::mem::size_of::<u32>() as u64;
+        let element_count_size = 1;
         let histogram_size = histogram_size(max_element_count);
         let inout_size = inout_size(max_element_count);
 
@@ -195,7 +194,7 @@ impl Sorter {
         let storage_size = inout_offset + inout_size;
 
         SorterStorageRequirements {
-            size: storage_size,
+            size: storage_size * size_of::<u32>() as u64,
             usage: BufferUsage::STORAGE_BUFFER
                 | BufferUsage::TRANSFER_DST
                 | BufferUsage::SHADER_DEVICE_ADDRESS,
@@ -206,7 +205,7 @@ impl Sorter {
         &self,
         max_element_count: u32,
     ) -> SorterStorageRequirements {
-        let element_count_size = std::mem::size_of::<u32>() as u64;
+        let element_count_size = 1;
         let histogram_size = histogram_size(max_element_count);
         let inout_size = inout_size(max_element_count);
 
@@ -216,16 +215,16 @@ impl Sorter {
         let storage_size = inout_offset + 2 * inout_size;
 
         SorterStorageRequirements {
-            size: storage_size,
+            size: storage_size * size_of::<u32>() as u64,
             usage: BufferUsage::STORAGE_BUFFER
                 | BufferUsage::TRANSFER_DST
                 | BufferUsage::SHADER_DEVICE_ADDRESS,
         }
     }
 
-    pub fn sort<T: GpuFuture>(
+    pub fn sort(
         &self,
-        previous_future: T,
+        previous_future: Box<dyn GpuFuture>,
         queue: Arc<Queue>,
         element_count: u32,
         keys_buffer: Subbuffer<[u32]>,
@@ -236,19 +235,15 @@ impl Sorter {
             queue,
             element_count,
             None,
-            0,
             keys_buffer,
-            keys_offset,
             None,
-            0,
             storage_buffer,
-            storage_offset,
         )
     }
 
-    pub fn sort_key_value<T: GpuFuture>(
+    pub fn sort_key_value(
         &self,
-        previous_future: T,
+        previous_future: Box<dyn GpuFuture>,
         queue: Arc<Queue>,
         element_count: u32,
         keys_buffer: Subbuffer<[u32]>,
@@ -267,9 +262,9 @@ impl Sorter {
     }
 
     // Implementation of sort algorithm
-    fn gpu_sort<T: GpuFuture>(
+    fn gpu_sort(
         &self,
-        previous_future: T,
+        previous_future: Box<dyn GpuFuture>,
         queue: Arc<Queue>,
         element_count: u32,
         indirect_buffer: Option<Subbuffer<[u32]>>,
@@ -277,16 +272,14 @@ impl Sorter {
         values_buffer: Option<Subbuffer<[u32]>>,
         storage_buffer: Subbuffer<[u32]>,
     ) -> Box<dyn GpuFuture> {
-        let partition_count = if indirect_buffer.is_some() {
-            element_count.div_ceil(PARTITION_SIZE)
-        } else {
-            element_count.div_ceil(PARTITION_SIZE)
-        };
+        let partition_count = element_count.div_ceil(PARTITION_SIZE);
 
         let histogram_size = histogram_size(element_count);
         let inout_size = inout_size(element_count);
+        let element_count_size = 1;
 
-        let element_count_offset = storage_offset;
+        // Define offsets
+        let element_count_offset = 0;
         let histogram_offset = element_count_offset + element_count_size;
         let inout_offset = histogram_offset + histogram_size;
 
@@ -304,17 +297,19 @@ impl Sorter {
             builder
                 .copy_buffer(CopyBufferInfo::buffers(
                     indirect_buf,
-                    storage_buffer.clone(),
+                    storage_buffer
+                        .clone()
+                        .slice(element_count_offset..(element_count_offset + 1)),
                 ))
                 .unwrap();
         } else {
             // Use provided element count
-            let element_count_bytes = element_count.to_ne_bytes();
             builder
-                .update_buffer(
-                    storage_buffer.slice(element_count_offset..(element_count_offset + std::mem::size_of::<u32>() as u64)),
-                    element_count_offset,
-                    &element_count_bytes,
+                .fill_buffer(
+                    storage_buffer
+                        .clone()
+                        .slice(element_count_offset..(element_count_offset + 1)),
+                    element_count,
                 )
                 .unwrap();
         }
@@ -322,30 +317,35 @@ impl Sorter {
         // Reset global histogram
         builder
             .fill_buffer(
-                storage_buffer.slice(
-                    histogram_offset
-                        ..(histogram_offset + 4 * RADIX as u64 * std::mem::size_of::<u32>() as u64),
-                ),
+                storage_buffer
+                    .clone()
+                    .slice(histogram_offset..(histogram_offset + 4 * RADIX as u64)),
                 0,
             )
             .unwrap();
-
-        // Get buffer device addresses
-        let storage_address = storage_buffer.device_address().unwrap().get();
-        let keys_address = keys_buffer.device_address().unwrap().get();
-        let values_address = values_buffer
-            .map(|buf| buf.device_address().unwrap().get())
-            .unwrap_or(0);
 
         // Sort in 4 passes (for 32 bit keys)
         for i in 0..4 {
             let pass = i;
 
-            // Set up push constants
-            let mut keys_in_reference = keys_address + keys_offset;
-            let mut keys_out_reference = storage_address + inout_offset;
-            let mut values_in_reference = values_address + values_offset;
-            let mut values_out_reference = storage_address + inout_offset + inout_size;
+            // Set up push constants using buffer slices
+            let mut keys_in_reference = keys_buffer.device_address().unwrap().get();
+            let mut keys_out_reference = storage_buffer
+                .clone()
+                .slice(inout_offset..)
+                .device_address()
+                .unwrap()
+                .get();
+            let mut values_in_reference = values_buffer
+                .as_ref()
+                .map(|buf| buf.device_address().unwrap().get())
+                .unwrap_or(0);
+            let mut values_out_reference = storage_buffer
+                .clone()
+                .slice(inout_offset + inout_size..)
+                .device_address()
+                .unwrap()
+                .get();
 
             // Swap references for odd passes
             if i % 2 == 1 {
@@ -353,11 +353,24 @@ impl Sorter {
                 std::mem::swap(&mut values_in_reference, &mut values_out_reference);
             }
 
-            let element_count_reference = storage_address + element_count_offset;
-            let global_histogram_reference = storage_address + histogram_offset;
-            let partition_histogram_reference = storage_address
-                + histogram_offset
-                + std::mem::size_of::<u32>() as u64 * 4 * RADIX as u64;
+            let element_count_reference = storage_buffer
+                .clone()
+                .slice(element_count_offset..)
+                .device_address()
+                .unwrap()
+                .get();
+            let global_histogram_reference = storage_buffer
+                .clone()
+                .slice(histogram_offset..)
+                .device_address()
+                .unwrap()
+                .get();
+            let partition_histogram_reference = storage_buffer
+                .clone()
+                .slice(histogram_offset + 4 * RADIX as u64..)
+                .device_address()
+                .unwrap()
+                .get();
 
             // Upsweep pass
             unsafe {
@@ -382,39 +395,65 @@ impl Sorter {
 
             // Spine pass
             unsafe {
-            builder
-                .bind_pipeline_compute(self.spine_pipeline.clone())
-                .unwrap()
-                .push_constants(
-                    self.spine_pipeline.layout().clone(),
-                    0,
-                    spine::PushConstant {
-                        pass,
-                        elementCountReference: element_count_reference,
-                        globalHistogramReference: global_histogram_reference,
-                        partitionHistogramReference: partition_histogram_reference,
-                    },
-                )
-                .unwrap()
-                .dispatch([RADIX, 1, 1])
-                .unwrap();
+                builder
+                    .bind_pipeline_compute(self.spine_pipeline.clone())
+                    .unwrap()
+                    .push_constants(
+                        self.spine_pipeline.layout().clone(),
+                        0,
+                        spine::PushConstant {
+                            pass,
+                            elementCountReference: element_count_reference,
+                            globalHistogramReference: global_histogram_reference,
+                            partitionHistogramReference: partition_histogram_reference,
+                        },
+                    )
+                    .unwrap()
+                    .dispatch([RADIX, 1, 1])
+                    .unwrap();
             }
 
             // Downsweep pass
             if values_buffer.is_some() {
                 builder
                     .bind_pipeline_compute(self.downsweep_key_value_pipeline.clone())
+                    .unwrap()
+                    .push_constants(
+                        self.downsweep_key_value_pipeline.layout().clone(),
+                        0,
+                        downsweep_key_value::PushConstant {
+                            pass,
+                            elementCountReference: element_count_reference,
+                            globalHistogramReference: global_histogram_reference,
+                            partitionHistogramReference: partition_histogram_reference,
+                            keysInReference: keys_in_reference,
+                            keysOutReference: keys_out_reference,
+                            valuesInReference: values_in_reference,
+                            valuesOutReference: values_out_reference,
+                        },
+                    )
                     .unwrap();
             } else {
                 builder
                     .bind_pipeline_compute(self.downsweep_pipeline.clone())
+                    .unwrap()
+                    .push_constants(
+                        self.downsweep_pipeline.layout().clone(),
+                        0,
+                        downsweep::PushConstant {
+                            pass,
+                            elementCountReference: element_count_reference,
+                            globalHistogramReference: global_histogram_reference,
+                            partitionHistogramReference: partition_histogram_reference,
+                            keysInReference: keys_in_reference,
+                            keysOutReference: keys_out_reference,
+                        },
+                    )
                     .unwrap();
             }
 
             unsafe {
-            builder
-                .dispatch([partition_count, 1, 1])
-                .unwrap();
+                builder.dispatch([partition_count, 1, 1]).unwrap();
             }
         }
 
