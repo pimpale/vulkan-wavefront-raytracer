@@ -35,10 +35,6 @@ fn histogram_size(element_count: u32) -> u64 {
     (1 + 4 * RADIX + element_count.div_ceil(PARTITION_SIZE) * RADIX) as u64
 }
 
-fn inout_size(element_count: u32) -> u64 {
-    element_count as u64
-}
-
 // Sorter struct to hold all necessary objects
 pub struct Sorter {
     device: Arc<Device>,
@@ -46,9 +42,6 @@ pub struct Sorter {
     spine_pipeline: Arc<ComputePipeline>,
     downsweep_pipeline: Arc<ComputePipeline>,
     downsweep_key_value_pipeline: Arc<ComputePipeline>,
-    memory_allocator: Arc<StandardMemoryAllocator>,
-    command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
-    descriptor_set_allocator: Arc<StandardDescriptorSetAllocator>,
     max_workgroup_size: u32,
 }
 
@@ -61,9 +54,6 @@ pub struct SorterStorageRequirements {
 impl Sorter {
     pub fn new(
         device: Arc<Device>,
-        memory_allocator: Arc<StandardMemoryAllocator>,
-        command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
-        descriptor_set_allocator: Arc<StandardDescriptorSetAllocator>,
     ) -> Self {
         // Get device properties (limit of workgroup size)
         let properties = device.physical_device().properties();
@@ -175,9 +165,6 @@ impl Sorter {
             spine_pipeline,
             downsweep_pipeline,
             downsweep_key_value_pipeline,
-            memory_allocator,
-            command_buffer_allocator,
-            descriptor_set_allocator,
             max_workgroup_size,
         }
     }
@@ -185,13 +172,9 @@ impl Sorter {
     pub fn get_storage_requirements(&self, max_element_count: u32) -> SorterStorageRequirements {
         let element_count_size = 1;
         let histogram_size = histogram_size(max_element_count);
-        let inout_size = inout_size(max_element_count);
-
-        let histogram_offset = element_count_size;
-        let inout_offset = histogram_offset + histogram_size;
 
         SorterStorageRequirements {
-            size: inout_offset,
+            size: element_count_size + histogram_size,
             usage: BufferUsage::STORAGE_BUFFER
                 | BufferUsage::TRANSFER_DST
                 | BufferUsage::SHADER_DEVICE_ADDRESS,
@@ -254,14 +237,12 @@ impl Sorter {
     ) {
         let partition_count = element_count.div_ceil(PARTITION_SIZE);
 
-        let histogram_size = histogram_size(element_count);
-        let inout_size = inout_size(element_count);
         let element_count_size = 1;
 
         // Define offsets
         let element_count_offset = 0;
         let histogram_offset = element_count_offset + element_count_size;
-        let inout_offset = histogram_offset + histogram_size;
+        let partition_histogram_offset = histogram_offset + 4 * RADIX as u64;
 
         // Set element count
         if let Some(indirect_buf) = indirect_buffer {
@@ -332,7 +313,7 @@ impl Sorter {
                 .get();
             let partition_histogram_reference = storage_buffer
                 .clone()
-                .slice(histogram_offset + 4 * RADIX as u64..)
+                .slice(partition_histogram_offset..)
                 .device_address()
                 .unwrap()
                 .get();

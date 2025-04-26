@@ -445,7 +445,7 @@ void main() {
     const uint seed = murmur3_combine(invocation_seed, bid);
 
     // debug info
-    if(bounce == 0) {
+    if(bounce == 1) {
         output_debug_info[bid] = vec3(float(gl_SubgroupInvocationID)/32);
     }
 
@@ -622,7 +622,8 @@ void main() {
     output_reflectivity[bid] = reflectivity;
     output_nee_mis_weight[bid] = light_pdf_mis_weight;
     output_bsdf_pdf[bid] = bsdf_pdf;
-    output_sort_key[bid] = morton_encode(new_direction);
+    // output_sort_key[bid] = morton_encode(new_direction);
+    output_sort_key[bid] = bid;
 }
 ",
 }

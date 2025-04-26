@@ -589,12 +589,7 @@ impl Renderer {
 
         let frame_futures = (0..swapchain_images.len()).map(|_| None).collect();
 
-        let sorter = Sorter::new(
-            device.clone(),
-            memory_allocator.clone(),
-            command_buffer_allocator.clone(),
-            descriptor_set_allocator.clone(),
-        );
+        let sorter = Sorter::new(device.clone());
 
         let mut renderer = Renderer {
             scale: 1,
@@ -946,7 +941,9 @@ impl Renderer {
                         .slice(0..ray_count),
                     self.sorter_storage[self.frame_count % MIN_IMAGE_COUNT].clone(),
                     // keys out (we don't care about the sorted keys)
-                    self.debug_info[self.frame_count % MIN_IMAGE_COUNT].clone().reinterpret(),
+                    self.debug_info[self.frame_count % MIN_IMAGE_COUNT]
+                        .clone()
+                        .reinterpret(),
                     // values out (needs to be written to the bounce indices buffer that will be used for the next bounce)
                     self.bounce_indices[self.frame_count % MIN_IMAGE_COUNT]
                         .clone()
