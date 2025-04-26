@@ -92,7 +92,11 @@ layout(set = 1, binding = 11, scalar) writeonly restrict buffer OutputsBsdfPdf {
     float output_bsdf_pdf[];
 };
 
-layout(set = 1, binding = 12, scalar) writeonly restrict buffer OutputsDebugInfo {
+layout(set = 1, binding = 12, scalar) writeonly restrict buffer OutputsRayKey {
+    uint output_sort_key[];
+};
+
+layout(set = 1, binding = 13, scalar) writeonly restrict buffer OutputsDebugInfo {
     vec3 output_debug_info[];
 };
 
@@ -392,6 +396,41 @@ IntersectionInfo getIntersectionInfo(vec3 origin, vec3 direction) {
     }
 }
 
+// Helper function to spread bits of a 10-bit integer for Morton encoding
+// Expands 10 bits (0-1023) to 30 bits by inserting 2 zeros between bits.
+// Example: b9 b8 ... b1 b0 -> 00b9 00b8 ... 00b1 00b0
+uint spreadBits(uint x) {
+    x &= 0x000003FF; // Mask to 10 bits
+    x = (x | (x << 16)) & 0x030000FF;
+    x = (x | (x <<  8)) & 0x0300F00F;
+    x = (x | (x <<  4)) & 0x030C30C3;
+    x = (x | (x <<  2)) & 0x09249249;
+    return x;
+}
+
+// Encodes a 3D direction vector into a 30-bit Morton code (Z-order curve).
+// Maps the direction from [-1, 1] per component to [0, 1023] integer coords,
+// then interleaves the bits.
+uint morton_encode(vec3 d) {
+    // Map direction from [-1, 1] to [0, 1] range
+    // Normalize first to handle potential non-unit vectors, although directions should ideally be normalized
+    vec3 mapped_d = (normalize(d) + vec3(1.0)) * 0.5;
+
+    // Scale to [0, 1023] (10 bits per dimension) and convert to uint
+    const float max_coord = 1023.0;
+    uvec3 ijk = uvec3(clamp(mapped_d * max_coord, 0.0, max_coord)); // Clamp to be safe
+
+    // Spread the bits of each component
+    uint sx = spreadBits(ijk.x); // ... 00x9 00x8 ... 00x0
+    uint sy = spreadBits(ijk.y); // ... 00y9 00y8 ... 00y0
+    uint sz = spreadBits(ijk.z); // ... 00z9 00z8 ... 00z0
+
+    // Interleave the spread bits: zyxzyxzyx...
+    uint morton = (sz << 2) | (sy << 1) | sx;
+
+    return morton;
+}
+
 void main() {
     // return early if we are out of bounds
     if(gl_GlobalInvocationID.x >= xsize * ysize) {
@@ -419,6 +458,7 @@ void main() {
         output_reflectivity[bid] = vec3(0.0);
         output_nee_mis_weight[bid] = 0.0;
         output_bsdf_pdf[bid] = 1.0;
+        output_sort_key[bid] = 0;
         return;
     }
 
@@ -433,6 +473,7 @@ void main() {
         output_reflectivity[bid] = vec3(0.0);
         output_nee_mis_weight[bid] = 0.0;
         output_bsdf_pdf[bid] = 1.0;
+        output_sort_key[bid] = 0;
         return;
     }
 
@@ -581,6 +622,7 @@ void main() {
     output_reflectivity[bid] = reflectivity;
     output_nee_mis_weight[bid] = light_pdf_mis_weight;
     output_bsdf_pdf[bid] = bsdf_pdf;
+    output_sort_key[bid] = morton_encode(new_direction);
 }
 ",
 }

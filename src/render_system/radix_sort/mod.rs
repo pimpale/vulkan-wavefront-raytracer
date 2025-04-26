@@ -6,15 +6,13 @@ use std::sync::Arc;
 use vulkano::{
     buffer::{BufferUsage, Subbuffer},
     command_buffer::{
-        AutoCommandBufferBuilder, CommandBufferUsage, CopyBufferInfo,
-        allocator::StandardCommandBufferAllocator,
+        allocator::StandardCommandBufferAllocator, AutoCommandBufferBuilder, CommandBufferUsage, CopyBufferInfo, PrimaryAutoCommandBuffer
     },
     descriptor_set::allocator::StandardDescriptorSetAllocator,
     device::{Device, Queue},
     memory::allocator::StandardMemoryAllocator,
     pipeline::{
-        ComputePipeline, Pipeline, PipelineLayout, PipelineShaderStageCreateInfo,
-        compute::ComputePipelineCreateInfo, layout::PipelineDescriptorSetLayoutCreateInfo,
+        compute::ComputePipelineCreateInfo, layout::PipelineDescriptorSetLayoutCreateInfo, ComputePipeline, Pipeline, PipelineLayout, PipelineShaderStageCreateInfo
     },
     sync::GpuFuture,
 };
@@ -191,31 +189,9 @@ impl Sorter {
 
         let histogram_offset = element_count_size;
         let inout_offset = histogram_offset + histogram_size;
-        let storage_size = inout_offset + inout_size;
 
         SorterStorageRequirements {
-            size: storage_size * size_of::<u32>() as u64,
-            usage: BufferUsage::STORAGE_BUFFER
-                | BufferUsage::TRANSFER_DST
-                | BufferUsage::SHADER_DEVICE_ADDRESS,
-        }
-    }
-
-    pub fn get_key_value_storage_requirements(
-        &self,
-        max_element_count: u32,
-    ) -> SorterStorageRequirements {
-        let element_count_size = 1;
-        let histogram_size = histogram_size(max_element_count);
-        let inout_size = inout_size(max_element_count);
-
-        let histogram_offset = element_count_size;
-        let inout_offset = histogram_offset + histogram_size;
-        // 2x for key value
-        let storage_size = inout_offset + 2 * inout_size;
-
-        SorterStorageRequirements {
-            size: storage_size * size_of::<u32>() as u64,
+            size: inout_offset,
             usage: BufferUsage::STORAGE_BUFFER
                 | BufferUsage::TRANSFER_DST
                 | BufferUsage::SHADER_DEVICE_ADDRESS,
@@ -224,54 +200,58 @@ impl Sorter {
 
     pub fn sort(
         &self,
-        previous_future: Box<dyn GpuFuture>,
-        queue: Arc<Queue>,
+        builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
         element_count: u32,
         keys_buffer: Subbuffer<[u32]>,
         storage_buffer: Subbuffer<[u32]>,
-    ) -> Box<dyn GpuFuture> {
+        keys_out_buffer: Subbuffer<[u32]>,
+    ) {
         self.gpu_sort(
-            previous_future,
-            queue,
+            builder,
             element_count,
             None,
             keys_buffer,
             None,
             storage_buffer,
+            keys_out_buffer,
+            None
         )
     }
 
     pub fn sort_key_value(
         &self,
-        previous_future: Box<dyn GpuFuture>,
-        queue: Arc<Queue>,
+        builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
         element_count: u32,
         keys_buffer: Subbuffer<[u32]>,
         values_buffer: Subbuffer<[u32]>,
         storage_buffer: Subbuffer<[u32]>,
-    ) -> Box<dyn GpuFuture> {
+        keys_out_buffer: Subbuffer<[u32]>,
+        values_out_buffer: Subbuffer<[u32]>,
+    ) {
         self.gpu_sort(
-            previous_future,
-            queue,
+            builder,
             element_count,
             None,
             keys_buffer,
             Some(values_buffer),
             storage_buffer,
+            keys_out_buffer,
+            Some(values_out_buffer),
         )
     }
 
     // Implementation of sort algorithm
     fn gpu_sort(
         &self,
-        previous_future: Box<dyn GpuFuture>,
-        queue: Arc<Queue>,
+        builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
         element_count: u32,
         indirect_buffer: Option<Subbuffer<[u32]>>,
         keys_buffer: Subbuffer<[u32]>,
         values_buffer: Option<Subbuffer<[u32]>>,
         storage_buffer: Subbuffer<[u32]>,
-    ) -> Box<dyn GpuFuture> {
+        keys_out_buffer: Subbuffer<[u32]>,
+        values_out_buffer: Option<Subbuffer<[u32]>>,
+    ) {
         let partition_count = element_count.div_ceil(PARTITION_SIZE);
 
         let histogram_size = histogram_size(element_count);
@@ -282,14 +262,6 @@ impl Sorter {
         let element_count_offset = 0;
         let histogram_offset = element_count_offset + element_count_size;
         let inout_offset = histogram_offset + histogram_size;
-
-        // Begin building command buffer
-        let mut builder = AutoCommandBufferBuilder::primary(
-            self.command_buffer_allocator.clone(),
-            queue.queue_family_index(),
-            CommandBufferUsage::OneTimeSubmit,
-        )
-        .unwrap();
 
         // Set element count
         if let Some(indirect_buf) = indirect_buffer {
@@ -330,22 +302,15 @@ impl Sorter {
 
             // Set up push constants using buffer slices
             let mut keys_in_reference = keys_buffer.device_address().unwrap().get();
-            let mut keys_out_reference = storage_buffer
-                .clone()
-                .slice(inout_offset..)
-                .device_address()
-                .unwrap()
-                .get();
+            let mut keys_out_reference = keys_out_buffer.device_address().unwrap().get();
             let mut values_in_reference = values_buffer
                 .as_ref()
                 .map(|buf| buf.device_address().unwrap().get())
                 .unwrap_or(0);
-            let mut values_out_reference = storage_buffer
-                .clone()
-                .slice(inout_offset + inout_size..)
-                .device_address()
-                .unwrap()
-                .get();
+            let mut values_out_reference = values_out_buffer
+                .as_ref()
+                .map(|buf| buf.device_address().unwrap().get())
+                .unwrap_or(0);
 
             // Swap references for odd passes
             if i % 2 == 1 {
@@ -456,13 +421,5 @@ impl Sorter {
                 builder.dispatch([partition_count, 1, 1]).unwrap();
             }
         }
-
-        // Execute command buffer
-        let command_buffer = builder.build().unwrap();
-
-        previous_future
-            .then_execute(queue, command_buffer)
-            .unwrap()
-            .boxed()
     }
 }

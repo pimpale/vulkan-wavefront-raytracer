@@ -8,7 +8,7 @@ use vulkano::{
     Validated, VulkanError,
     buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer},
     command_buffer::{
-        AutoCommandBufferBuilder, CommandBufferUsage, CopyBufferToImageInfo,
+        AutoCommandBufferBuilder, CommandBufferUsage, CopyBufferInfo, CopyBufferToImageInfo,
         PrimaryCommandBufferAbstract, allocator::StandardCommandBufferAllocator,
     },
     descriptor_set::{
@@ -38,6 +38,7 @@ use crate::camera::RenderingPreferences;
 
 use super::{
     bvh::BvhNode,
+    radix_sort::{Sorter, SorterStorageRequirements},
     scene::Scene,
     shader::{compact, nee_pdf, outgoing_radiance, postprocess, raygen, raytrace},
     vertex::InstanceData,
@@ -193,8 +194,9 @@ fn window_size_dependent_setup<T: BufferContents>(
                         BufferUsage::STORAGE_BUFFER
                             | BufferUsage::TRANSFER_SRC
                             | BufferUsage::TRANSFER_DST
+                            | BufferUsage::SHADER_DEVICE_ADDRESS
                     } else {
-                        BufferUsage::STORAGE_BUFFER
+                        BufferUsage::STORAGE_BUFFER | BufferUsage::SHADER_DEVICE_ADDRESS
                     },
                     ..Default::default()
                 },
@@ -226,10 +228,11 @@ pub struct Renderer {
     command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
     swapchain: Arc<Swapchain>,
     material_descriptor_set: Arc<DescriptorSet>,
+    // sorter (used to sort the bounces)
+    sorter: Sorter,
+    sorter_storage: Vec<Subbuffer<[u32]>>,
     ray_origins: Vec<Subbuffer<[f32]>>,
     ray_directions: Vec<Subbuffer<[f32]>>,
-    // used to sort the bounces
-    ray_keys: Vec<Subbuffer<[u32]>>,
     // each thread looks up the memory location of the bounce in the this array
     bounce_indices: Vec<Subbuffer<[u32]>>,
     bounce_normals: Vec<Subbuffer<[f32]>>,
@@ -245,6 +248,8 @@ pub struct Renderer {
     bounce_outgoing_radiance: Vec<Subbuffer<[f32]>>,
     // the sampling pdf of the next direction
     bounce_omega_sampling_pdf: Vec<Subbuffer<[f32]>>,
+    // the sort keys for each bounce
+    sort_keys: Vec<Subbuffer<[u32]>>,
     debug_info: Vec<Subbuffer<[f32]>>,
     frame_finished_rendering: Vec<Option<FenceSignalFuture<Box<dyn GpuFuture>>>>,
     swapchain_images: Vec<Arc<Image>>,
@@ -584,6 +589,13 @@ impl Renderer {
 
         let frame_futures = (0..swapchain_images.len()).map(|_| None).collect();
 
+        let sorter = Sorter::new(
+            device.clone(),
+            memory_allocator.clone(),
+            command_buffer_allocator.clone(),
+            descriptor_set_allocator.clone(),
+        );
+
         let mut renderer = Renderer {
             scale: 1,
             num_bounces: 6,
@@ -606,10 +618,11 @@ impl Renderer {
             wdd_needs_rebuild: false,
             material_descriptor_set,
             frame_count: 0,
+            sorter,
+            sorter_storage: vec![],
             // buffers (to be created)
             ray_origins: vec![],
             ray_directions: vec![],
-            ray_keys: vec![],
             bounce_indices: vec![],
             bounce_normals: vec![],
             bounce_emissivity: vec![],
@@ -619,6 +632,7 @@ impl Renderer {
             bounce_nee_pdf: vec![],
             bounce_outgoing_radiance: vec![],
             bounce_omega_sampling_pdf: vec![],
+            sort_keys: vec![],
             debug_info: vec![],
             rng: rand::rng(),
         };
@@ -737,6 +751,13 @@ impl Renderer {
             self.scale,
             1 * self.num_bounces,
         );
+        self.sort_keys = window_size_dependent_setup(
+            self.memory_allocator.clone(),
+            &self.swapchain_images,
+            true,
+            self.scale,
+            1,
+        );
         // debug info (single image)
         self.debug_info = window_size_dependent_setup(
             self.memory_allocator.clone(),
@@ -745,6 +766,32 @@ impl Renderer {
             self.scale,
             3,
         );
+
+        self.sorter_storage = self
+            .swapchain_images
+            .iter()
+            .map(|image| image.extent())
+            .map(|extent| {
+                let SorterStorageRequirements { size, usage } =
+                    self.sorter.get_storage_requirements(
+                        extent[0] * extent[1] * self.scale * self.scale as u32,
+                    );
+
+                Buffer::new_slice::<u32>(
+                    self.memory_allocator.clone(),
+                    BufferCreateInfo {
+                        usage,
+                        ..Default::default()
+                    },
+                    AllocationCreateInfo {
+                        memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
+                        ..Default::default()
+                    },
+                    size,
+                )
+                .unwrap()
+            })
+            .collect::<Vec<_>>();
     }
 
     fn group_count_1d(&self, extent: &[u32; 2]) -> [u32; 3] {
@@ -878,12 +925,34 @@ impl Renderer {
                 .unwrap();
         }
 
-        let sect_sz = (size_of::<f32>() as u32 * rt_extent[0] * rt_extent[1]) as u64;
+        let ray_count = (rt_extent[0] * rt_extent[1]) as u64;
+        let sect_sz = size_of::<f32>() as u64 * ray_count;
 
         // dispatch raytrace pipeline
         for bounce in 0..self.num_bounces {
             // for bounce in 0..0 {
             let b = bounce as u64;
+
+            // sort the rays (if we are not the first bounce)
+            if bounce > 0 {
+                self.sorter.sort_key_value(
+                    &mut builder,
+                    ray_count as u32,
+                    // keys in (morton codes)
+                    self.sort_keys[self.frame_count % MIN_IMAGE_COUNT].clone(),
+                    // values in (index of the ray in memory (which is the same as the bounce index at the first bounce)
+                    self.bounce_indices[self.frame_count % MIN_IMAGE_COUNT]
+                        .clone()
+                        .slice(0..ray_count),
+                    self.sorter_storage[self.frame_count % MIN_IMAGE_COUNT].clone(),
+                    // keys out (we don't care about the sorted keys)
+                    self.debug_info[self.frame_count % MIN_IMAGE_COUNT].clone().reinterpret(),
+                    // values out (needs to be written to the bounce indices buffer that will be used for the next bounce)
+                    self.bounce_indices[self.frame_count % MIN_IMAGE_COUNT]
+                        .clone()
+                        .slice(b * ray_count..(b + 1) * ray_count),
+                );
+            }
 
             unsafe {
                 builder
@@ -1008,6 +1077,10 @@ impl Renderer {
                             ),
                             WriteDescriptorSet::buffer(
                                 12,
+                                self.sort_keys[self.frame_count % MIN_IMAGE_COUNT].clone(),
+                            ),
+                            WriteDescriptorSet::buffer(
+                                13,
                                 self.debug_info[self.frame_count % MIN_IMAGE_COUNT].clone(),
                             ),
                         ]
@@ -1029,57 +1102,6 @@ impl Renderer {
                     .unwrap()
                     .dispatch(self.group_count_1d(&rt_extent))
                     .unwrap();
-            }
-
-            // this compacts the bounce indices
-            if bounce != self.num_bounces - 1 {
-                unsafe {
-                    builder
-                        .bind_pipeline_compute(self.compact_pipeline.clone())
-                        .unwrap()
-                        .push_descriptor_set(
-                            PipelineBindPoint::Compute,
-                            self.compact_pipeline.layout().clone(),
-                            0,
-                            vec![
-                                // input bounce index
-                                WriteDescriptorSet::buffer_with_range(
-                                    0,
-                                    DescriptorBufferInfo {
-                                        buffer: self.bounce_indices
-                                            [self.frame_count % MIN_IMAGE_COUNT]
-                                            .as_bytes()
-                                            .clone(),
-                                        range: b * sect_sz..(b + 1) * sect_sz,
-                                    },
-                                ),
-                                // output bounce index
-                                WriteDescriptorSet::buffer_with_range(
-                                    1,
-                                    DescriptorBufferInfo {
-                                        buffer: self.bounce_indices
-                                            [self.frame_count % MIN_IMAGE_COUNT]
-                                            .as_bytes()
-                                            .clone(),
-                                        range: (b + 1) * sect_sz..(b + 2) * sect_sz,
-                                    },
-                                ),
-                            ]
-                            .into(),
-                        )
-                        .unwrap()
-                        .push_constants(
-                            self.compact_pipeline.layout().clone(),
-                            0,
-                            compact::PushConstants {
-                                xsize: rt_extent[0],
-                                ysize: rt_extent[1],
-                            },
-                        )
-                        .unwrap()
-                        .dispatch(self.group_count_1d(&rt_extent))
-                        .unwrap();
-                }
             }
         }
 
