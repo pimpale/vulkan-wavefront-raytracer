@@ -814,69 +814,69 @@ impl Renderer {
         up: Vector3<f32>,
         rendering_preferences: RenderingPreferences,
     ) {
-        let (
-            top_level_acceleration_structure,
-            light_top_level_acceleration_structure,
-            instance_data,
-            luminance_bvh,
-        ) = scene.get_tlas();
+        unsafe {
+            let (
+                top_level_acceleration_structure,
+                light_top_level_acceleration_structure,
+                instance_data,
+                luminance_bvh,
+            ) = scene.get_tlas();
 
-        // Whenever the window resizes we need to recreate everything dependent on the window size.
-        // In this example that includes the swapchain, the framebuffers and the dynamic state viewport.
-        if self.wdd_needs_rebuild {
-            self.rebuild(get_surface_extent(&self.surface));
-            self.wdd_needs_rebuild = false;
-            println!("rebuilt swapchain");
-        }
+            // Whenever the window resizes we need to recreate everything dependent on the window size.
+            // In this example that includes the swapchain, the framebuffers and the dynamic state viewport.
+            if self.wdd_needs_rebuild {
+                self.rebuild(get_surface_extent(&self.surface));
+                self.wdd_needs_rebuild = false;
+                println!("rebuilt swapchain");
+            }
 
-        // Do not draw frame when screen dimensions are zero.
-        // On Windows, this can occur from minimizing the application.
-        let win_extent = get_surface_extent(&self.surface);
-        if win_extent[0] == 0 || win_extent[1] == 0 {
-            return;
-        }
+            // Do not draw frame when screen dimensions are zero.
+            // On Windows, this can occur from minimizing the application.
+            let win_extent = get_surface_extent(&self.surface);
+            if win_extent[0] == 0 || win_extent[1] == 0 {
+                return;
+            }
 
-        // This operation returns the index of the image that we are allowed to draw upon.
-        let (image_index, suboptimal, acquire_future) =
-            match swapchain::acquire_next_image(self.swapchain.clone(), None)
-                .map_err(Validated::unwrap)
-            {
-                Ok(r) => r,
-                Err(VulkanError::OutOfDate) => {
-                    println!("swapchain out of date (at acquire)");
-                    self.wdd_needs_rebuild = true;
-                    return;
-                }
-                Err(e) => panic!("Failed to acquire next image: {:?}", e),
-            };
+            // This operation returns the index of the image that we are allowed to draw upon.
+            let (image_index, suboptimal, acquire_future) =
+                match swapchain::acquire_next_image(self.swapchain.clone(), None)
+                    .map_err(Validated::unwrap)
+                {
+                    Ok(r) => r,
+                    Err(VulkanError::OutOfDate) => {
+                        println!("swapchain out of date (at acquire)");
+                        self.wdd_needs_rebuild = true;
+                        return;
+                    }
+                    Err(e) => panic!("Failed to acquire next image: {:?}", e),
+                };
 
-        if suboptimal {
-            self.wdd_needs_rebuild = true;
-        }
+            if suboptimal {
+                self.wdd_needs_rebuild = true;
+            }
 
-        let mut builder = AutoCommandBufferBuilder::primary(
-            self.command_buffer_allocator.clone(),
-            self.queue.queue_family_index(),
-            CommandBufferUsage::OneTimeSubmit,
-        )
-        .unwrap();
-
-        let extent_3d = self.swapchain_images[image_index as usize].extent();
-        let extent = [extent_3d[0], extent_3d[1]];
-        let rt_extent = [extent[0] * self.scale, extent[1] * self.scale];
-
-        // blank the debug info buffer
-        builder
-            .fill_buffer(
-                self.debug_info[self.frame_count % MIN_IMAGE_COUNT]
-                    .clone()
-                    .reinterpret::<[u32]>(),
-                0,
+            let mut builder = AutoCommandBufferBuilder::primary(
+                self.command_buffer_allocator.clone(),
+                self.queue.queue_family_index(),
+                CommandBufferUsage::OneTimeSubmit,
             )
             .unwrap();
 
-        // dispatch raygen pipeline
-        unsafe {
+            let extent_3d = self.swapchain_images[image_index as usize].extent();
+            let extent = [extent_3d[0], extent_3d[1]];
+            let rt_extent = [extent[0] * self.scale, extent[1] * self.scale];
+
+            // blank the debug info buffer
+            builder
+                .fill_buffer(
+                    self.debug_info[self.frame_count % MIN_IMAGE_COUNT]
+                        .clone()
+                        .reinterpret::<[u32]>(),
+                    0,
+                )
+                .unwrap();
+
+            // dispatch raygen pipeline
             builder
                 .bind_pipeline_compute(self.raygen_pipeline.clone())
                 .unwrap()
@@ -918,40 +918,38 @@ impl Renderer {
                 .unwrap()
                 .dispatch(self.group_count_2d(&rt_extent))
                 .unwrap();
-        }
 
-        let ray_count = (rt_extent[0] * rt_extent[1]) as u64;
-        let sect_sz = size_of::<f32>() as u64 * ray_count;
+            let ray_count = (rt_extent[0] * rt_extent[1]) as u64;
+            let sect_sz = size_of::<f32>() as u64 * ray_count;
 
-        // dispatch raytrace pipeline
-        for bounce in 0..self.num_bounces {
-            // for bounce in 0..0 {
-            let b = bounce as u64;
+            // dispatch raytrace pipeline
+            for bounce in 0..self.num_bounces {
+                // for bounce in 0..0 {
+                let b = bounce as u64;
 
-            // sort the rays (if we are not the first bounce)
-            if bounce > 0 {
-                self.sorter.sort_key_value(
-                    &mut builder,
-                    ray_count as u32,
-                    // keys in (morton codes)
-                    self.sort_keys[self.frame_count % MIN_IMAGE_COUNT].clone(),
-                    // values in (index of the ray in memory (which is the same as the bounce index at the first bounce)
-                    self.bounce_indices[self.frame_count % MIN_IMAGE_COUNT]
-                        .clone()
-                        .slice(0..ray_count),
-                    self.sorter_storage[self.frame_count % MIN_IMAGE_COUNT].clone(),
-                    // keys out (we don't care about the sorted keys)
-                    self.debug_info[self.frame_count % MIN_IMAGE_COUNT]
-                        .clone()
-                        .reinterpret(),
-                    // values out (needs to be written to the bounce indices buffer that will be used for the next bounce)
-                    self.bounce_indices[self.frame_count % MIN_IMAGE_COUNT]
-                        .clone()
-                        .slice(b * ray_count..(b + 1) * ray_count),
-                );
-            }
+                // sort the rays (if we are not the first bounce)
+                if bounce > 0 {
+                    // self.sorter.sort_key_value(
+                    //     &mut builder,
+                    //     ray_count as u32,
+                    //     // keys in (morton codes)
+                    //     self.sort_keys[self.frame_count % MIN_IMAGE_COUNT].clone(),
+                    //     // values in (index of the ray in memory (which is the same as the bounce index at the first bounce)
+                    //     self.bounce_indices[self.frame_count % MIN_IMAGE_COUNT]
+                    //         .clone()
+                    //         .slice(0..ray_count),
+                    //     self.sorter_storage[self.frame_count % MIN_IMAGE_COUNT].clone(),
+                    //     // keys out (we don't care about the sorted keys)
+                    //     self.debug_info[self.frame_count % MIN_IMAGE_COUNT]
+                    //         .clone()
+                    //         .reinterpret(),
+                    //     // values out (needs to be written to the bounce indices buffer that will be used for the next bounce)
+                    //     self.bounce_indices[self.frame_count % MIN_IMAGE_COUNT]
+                    //         .clone()
+                    //         .slice(b * ray_count..(b + 1) * ray_count),
+                    // );
+                }
 
-            unsafe {
                 builder
                     .bind_pipeline_compute(self.raytrace_pipeline.clone())
                     .unwrap()
@@ -1100,19 +1098,17 @@ impl Renderer {
                     .dispatch(self.group_count_1d(&rt_extent))
                     .unwrap();
             }
-        }
 
-        // bind nee pdf pipeline
-        // this is done in a separate pass for better memory access patterns
-        builder
-            .bind_pipeline_compute(self.nee_pdf_pipeline.clone())
-            .unwrap();
+            // bind nee pdf pipeline
+            // this is done in a separate pass for better memory access patterns
+            builder
+                .bind_pipeline_compute(self.nee_pdf_pipeline.clone())
+                .unwrap();
 
-        // dispatch nee pdf pipeline
-        for bounce in 0..(self.num_bounces - 1) {
-            // for bounce in 0..0 {
-            let b = bounce as u64;
-            unsafe {
+            // dispatch nee pdf pipeline
+            for bounce in 0..(self.num_bounces - 1) {
+                // for bounce in 0..0 {
+                let b = bounce as u64;
                 // compute nee pdf
                 builder
                     .push_descriptor_set(
@@ -1194,10 +1190,8 @@ impl Renderer {
                     .dispatch(self.group_count_2d(&rt_extent))
                     .unwrap();
             }
-        }
 
-        // compute the outgoing radiance at all bounces
-        unsafe {
+            // compute the outgoing radiance at all bounces
             builder
                 .bind_pipeline_compute(self.outgoing_radiance_pipeline.clone())
                 .unwrap()
@@ -1260,11 +1254,9 @@ impl Renderer {
                 .unwrap()
                 .dispatch(self.group_count_2d(&rt_extent))
                 .unwrap();
-        }
 
-        // aggregate the samples and write to swapchain image
-        let poolsize = 1;
-        unsafe {
+            // aggregate the samples and write to swapchain image
+            let poolsize = 1;
             builder
                 .bind_pipeline_compute(self.postprocess_pipeline.clone())
                 .unwrap()
@@ -1309,44 +1301,47 @@ impl Renderer {
                 .unwrap()
                 .dispatch(self.group_count_2d(&[extent[0] / poolsize, &extent[1] / poolsize]))
                 .unwrap();
+
+            let command_buffer = builder.build().unwrap();
+
+            let last_cycle_future = std::mem::replace(
+                &mut self.frame_finished_rendering[self.frame_count % MIN_IMAGE_COUNT],
+                None,
+            );
+
+            match last_cycle_future {
+                Some(f) => f.wait(None).unwrap(),
+                None => {}
+            }
+
+            let future = acquire_future
+                .then_execute(self.queue.clone(), command_buffer)
+                .unwrap()
+                .then_swapchain_present(
+                    self.queue.clone(),
+                    SwapchainPresentInfo::swapchain_image_index(
+                        self.swapchain.clone(),
+                        image_index,
+                    ),
+                )
+                .boxed()
+                .then_signal_fence_and_flush();
+
+            self.frame_finished_rendering[self.frame_count % MIN_IMAGE_COUNT] =
+                match future.map_err(Validated::unwrap) {
+                    Ok(future) => Some(future),
+                    Err(VulkanError::OutOfDate) => {
+                        self.wdd_needs_rebuild = true;
+                        println!("swapchain out of date (at flush)");
+                        None
+                    }
+                    Err(e) => {
+                        println!("failed to flush future: {e}");
+                        None
+                    }
+                };
+
+            self.frame_count = self.frame_count.wrapping_add(1);
         }
-
-        let command_buffer = builder.build().unwrap();
-
-        let last_cycle_future = std::mem::replace(
-            &mut self.frame_finished_rendering[self.frame_count % MIN_IMAGE_COUNT],
-            None,
-        );
-
-        match last_cycle_future {
-            Some(f) => f.wait(None).unwrap(),
-            None => {}
-        }
-
-        let future = acquire_future
-            .then_execute(self.queue.clone(), command_buffer)
-            .unwrap()
-            .then_swapchain_present(
-                self.queue.clone(),
-                SwapchainPresentInfo::swapchain_image_index(self.swapchain.clone(), image_index),
-            )
-            .boxed()
-            .then_signal_fence_and_flush();
-
-        self.frame_finished_rendering[self.frame_count % MIN_IMAGE_COUNT] =
-            match future.map_err(Validated::unwrap) {
-                Ok(future) => Some(future),
-                Err(VulkanError::OutOfDate) => {
-                    self.wdd_needs_rebuild = true;
-                    println!("swapchain out of date (at flush)");
-                    None
-                }
-                Err(e) => {
-                    println!("failed to flush future: {e}");
-                    None
-                }
-            };
-
-        self.frame_count = self.frame_count.wrapping_add(1);
     }
 }
