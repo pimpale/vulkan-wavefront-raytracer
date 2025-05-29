@@ -4,6 +4,7 @@ use game_system::game_world::{EntityCreationData, EntityPhysicsData, GameWorld};
 use nalgebra::{Isometry3, Point3, Vector3};
 use rapier3d::dynamics::RigidBodyType;
 
+use vulkano::sync::{self, GpuFuture};
 use vulkano::{
     VulkanLibrary,
     command_buffer::allocator::StandardCommandBufferAllocator,
@@ -25,6 +26,8 @@ mod game_system;
 mod handle_user_input;
 mod render_system;
 mod utils;
+
+use rand::RngCore;
 
 fn build_scene(
     general_queue: Arc<vulkano::device::Queue>,
@@ -210,6 +213,448 @@ impl App {
     }
 }
 
+fn test_radix_sort(device: Arc<vulkano::device::Device>, queue: Arc<vulkano::device::Queue>) {
+    use vulkano::{
+        buffer::{Buffer, BufferCreateInfo, BufferUsage},
+        command_buffer::{
+            allocator::StandardCommandBufferAllocator,
+            AutoCommandBufferBuilder,
+            CommandBufferUsage,
+            PrimaryAutoCommandBuffer,
+        },
+        memory::allocator::{AllocationCreateInfo, MemoryTypeFilter},
+        sync,
+    };
+    use render_system::radix_sort::Sorter;
+    use rand::RngCore;
+
+    // Allocators
+    let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
+    let command_buffer_allocator = Arc::new(StandardCommandBufferAllocator::new(
+        device.clone(),
+        Default::default(),
+    ));
+
+    // Instantiate the sorter once – it will be reused by the individual tests
+    let sorter = Sorter::new(device.clone());
+
+    // Convenience lambda to build & submit a command buffer and wait for completion
+    let submit_and_wait = |builder: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>| {
+        let cmd_buf = builder.build().unwrap();
+        let future = sync::now(device.clone())
+            .then_execute(queue.clone(), cmd_buf)
+            .unwrap();
+        future
+            .then_signal_fence_and_flush()
+            .unwrap()
+            .wait(None)
+            .unwrap();
+    };
+
+    // ------------- Test 1: Keys-only sorting -------------
+    {
+        let keys: Vec<u32> = vec![10, 5, 3, 8, 2, 1, 7, 6, 4, 9];
+        let mut expected = keys.clone();
+        expected.sort();
+
+        // Buffer usage flags common to all buffers we create
+        let usage_common = BufferUsage::STORAGE_BUFFER
+            | BufferUsage::TRANSFER_SRC
+            | BufferUsage::TRANSFER_DST
+            | BufferUsage::SHADER_DEVICE_ADDRESS;
+        let alloc_info = AllocationCreateInfo {
+            memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                | MemoryTypeFilter::HOST_RANDOM_ACCESS
+                | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+            ..Default::default()
+        };
+
+        // Input / output buffers
+        let keys_buffer = Buffer::from_iter(
+            memory_allocator.clone(),
+            BufferCreateInfo {
+                usage: usage_common,
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                    | MemoryTypeFilter::HOST_RANDOM_ACCESS
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                ..Default::default()
+            },
+            keys.clone(),
+        )
+        .unwrap();
+        let keys_out_buffer = Buffer::new_slice::<u32>(
+            memory_allocator.clone(),
+            BufferCreateInfo {
+                usage: usage_common,
+                ..Default::default()
+            },
+            alloc_info.clone(),
+            keys.len() as u64,
+        )
+        .unwrap();
+
+        // Scratch buffer required by the sorter
+        let storage_req = sorter.get_storage_requirements(keys.len() as u32);
+        let storage_buffer = Buffer::new_slice::<u32>(
+            memory_allocator.clone(),
+            BufferCreateInfo {
+                usage: storage_req.usage,
+                ..Default::default()
+            },
+            alloc_info.clone(),
+            storage_req.size,
+        )
+        .unwrap();
+
+        sorter.gpu_sort_dbg(
+            queue.clone(),
+            command_buffer_allocator.clone(),
+            keys.len() as u32,
+            keys_buffer.clone(),
+            None,
+            storage_buffer.clone(),
+            keys_out_buffer.clone(),
+            None,
+        );
+
+
+        let gpu_sorted = keys_out_buffer.read().unwrap().to_vec();
+        let alt_sorted = keys_buffer.read().unwrap().to_vec();
+
+        if gpu_sorted == expected {
+            println!("[RadixSort Test] Keys-only sort: PASS (output buffer)");
+        } else if alt_sorted == expected {
+            println!("[RadixSort Test] Keys-only sort: PASS (input buffer)");
+        } else {
+            println!(
+                "[RadixSort Test] Keys-only sort: FAIL\n  Expected: {:?}\n  Got (out): {:?}\n  Got (in) : {:?}",
+                expected, gpu_sorted, alt_sorted
+            );
+        }
+    }
+
+    // ------------- Test 2: Key-value sorting -------------
+    {
+        let keys: Vec<u32> = vec![3, 1, 4, 5, 9, 2, 6, 8, 7, 0];
+        let values: Vec<u32> = (0..keys.len() as u32).collect();
+
+        // Expected result computed on CPU
+        let mut cpu_pairs: Vec<(u32, u32)> =
+            keys.iter().copied().zip(values.iter().copied()).collect();
+        cpu_pairs.sort_by_key(|&(k, _)| k);
+        let expected_keys: Vec<u32> = cpu_pairs.iter().map(|&(k, _)| k).collect();
+        let expected_vals: Vec<u32> = cpu_pairs.iter().map(|&(_, v)| v).collect();
+
+        // Buffer setup
+        let usage_common = BufferUsage::STORAGE_BUFFER
+            | BufferUsage::TRANSFER_SRC
+            | BufferUsage::TRANSFER_DST
+            | BufferUsage::SHADER_DEVICE_ADDRESS;
+        let alloc_info = AllocationCreateInfo {
+            memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                | MemoryTypeFilter::HOST_RANDOM_ACCESS
+                | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+            ..Default::default()
+        };
+
+        let keys_buffer = Buffer::from_iter(
+            memory_allocator.clone(),
+            BufferCreateInfo {
+                usage: usage_common,
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                    | MemoryTypeFilter::HOST_RANDOM_ACCESS
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                ..Default::default()
+            },
+            keys.clone(),
+        )
+        .unwrap();
+        let values_buffer = Buffer::from_iter(
+            memory_allocator.clone(),
+            BufferCreateInfo {
+                usage: usage_common,
+                ..Default::default()
+            },
+            alloc_info.clone(),
+            values.clone(),
+        )
+        .unwrap();
+        let keys_out_buffer = Buffer::new_slice::<u32>(
+            memory_allocator.clone(),
+            BufferCreateInfo {
+                usage: usage_common,
+                ..Default::default()
+            },
+            alloc_info.clone(),
+            keys.len() as u64,
+        )
+        .unwrap();
+        let values_out_buffer = Buffer::new_slice::<u32>(
+            memory_allocator.clone(),
+            BufferCreateInfo {
+                usage: usage_common,
+                ..Default::default()
+            },
+            alloc_info.clone(),
+            keys.len() as u64,
+        )
+        .unwrap();
+
+        // Scratch buffer
+        let storage_req = sorter.get_storage_requirements(keys.len() as u32);
+        let storage_buffer = Buffer::new_slice::<u32>(
+            memory_allocator.clone(),
+            BufferCreateInfo {
+                usage: storage_req.usage,
+                ..Default::default()
+            },
+            alloc_info.clone(),
+            storage_req.size,
+        )
+        .unwrap();
+
+
+        sorter.gpu_sort_dbg(
+            queue.clone(),
+            command_buffer_allocator.clone(),
+            keys.len() as u32,
+            keys_buffer.clone(),
+            Some(values_buffer.clone()),
+            storage_buffer.clone(),
+            keys_out_buffer.clone(),
+            Some(values_out_buffer.clone()),
+        );
+
+        let gpu_keys_out = keys_out_buffer.read().unwrap().to_vec();
+        let gpu_vals_out = values_out_buffer.read().unwrap().to_vec();
+        let alt_keys = keys_buffer.read().unwrap().to_vec();
+        let alt_vals = values_buffer.read().unwrap().to_vec();
+
+        let pass_primary = gpu_keys_out == expected_keys && gpu_vals_out == expected_vals;
+        let pass_alt = alt_keys == expected_keys && alt_vals == expected_vals;
+
+        if pass_primary {
+            println!("[RadixSort Test] Key-value sort: PASS (output buffers)");
+        } else if pass_alt {
+            println!("[RadixSort Test] Key-value sort: PASS (input buffers)");
+        } else {
+            println!(
+                "[RadixSort Test] Key-value sort: FAIL\n  Expected keys : {:?}\n  Expected vals : {:?}\n  Got (out) keys: {:?}\n  Got (out) vals: {:?}",
+                expected_keys, expected_vals, gpu_keys_out, gpu_vals_out
+            );
+        }
+    }
+
+    // ------------- Test 3: Large random keys-only sorting -------------
+    {
+        use rand::{Rng, SeedableRng};
+        use rand::rngs::StdRng;
+
+        const N: usize = 3_145_729; // Non power-of-two (>3 million)
+        println!("[RadixSort Test] Generating {} random keys (keys-only test)...", N);
+
+        // Deterministic RNG for reproducibility
+        let mut rng = StdRng::seed_from_u64(0xDEADBEEF);
+        let keys: Vec<u32> = (0..N).map(|_| rng.next_u32()).collect();
+
+        let mut expected = keys.clone();
+        expected.sort();
+
+        let usage_common = BufferUsage::STORAGE_BUFFER
+            | BufferUsage::TRANSFER_SRC
+            | BufferUsage::TRANSFER_DST
+            | BufferUsage::SHADER_DEVICE_ADDRESS;
+
+        // Input / output buffers
+        let keys_buffer = Buffer::from_iter(
+            memory_allocator.clone(),
+            BufferCreateInfo { usage: usage_common, ..Default::default() },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                    | MemoryTypeFilter::HOST_RANDOM_ACCESS
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                ..Default::default()
+            },
+            keys.clone(),
+        ).unwrap();
+
+        let keys_out_buffer = Buffer::new_slice::<u32>(
+            memory_allocator.clone(),
+            BufferCreateInfo { usage: usage_common, ..Default::default() },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                    | MemoryTypeFilter::HOST_RANDOM_ACCESS
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                ..Default::default()
+            },
+            N as u64,
+        ).unwrap();
+
+        // Scratch/storage buffer
+        let storage_req = sorter.get_storage_requirements(N as u32);
+        let storage_buffer = Buffer::new_slice::<u32>(
+            memory_allocator.clone(),
+            BufferCreateInfo { usage: storage_req.usage, ..Default::default() },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                    | MemoryTypeFilter::HOST_RANDOM_ACCESS
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                ..Default::default()
+            },
+            storage_req.size,
+        ).unwrap();
+
+        sorter.gpu_sort_dbg(
+            queue.clone(),
+            command_buffer_allocator.clone(),
+            keys.len() as u32,
+            keys_buffer.clone(),
+            None,
+            storage_buffer.clone(),
+            keys_out_buffer.clone(),
+            None,
+        );
+
+        // Validate results (check whichever buffer holds the sorted data)
+        let gpu_out = keys_out_buffer.read().unwrap().to_vec();
+        if gpu_out.as_slice() == expected.as_slice() {
+            println!("[RadixSort Test] Large keys-only sort: PASS (output buffer)");
+        } else {
+            let gpu_alt = keys_buffer.read().unwrap().to_vec();
+            if gpu_alt.as_slice() == expected.as_slice() {
+                println!("[RadixSort Test] Large keys-only sort: PASS (input buffer)");
+            } else {
+                println!("[RadixSort Test] Large keys-only sort: FAIL (mismatch detected)");
+            }
+        }
+    }
+
+    // ------------- Test 4: Large random key-value sorting -------------
+    {
+        use rand::{Rng, SeedableRng};
+        use rand::rngs::StdRng;
+
+        const N: usize = 3_145_729; // Same non power-of-two size
+        println!("[RadixSort Test] Generating {} random key/value pairs (key-value test)...", N);
+
+        let mut rng = StdRng::seed_from_u64(0xCAFEBABEu64);
+        let keys: Vec<u32> = (0..N).map(|_| rng.next_u32()).collect();
+        let values: Vec<u32> = (0..N as u32).collect();
+
+        // Expected CPU sort
+        let mut cpu_pairs: Vec<(u32, u32)> = keys.iter().copied().zip(values.iter().copied()).collect();
+        cpu_pairs.sort_by_key(|&(k, _)| k);
+        let expected_keys: Vec<u32> = cpu_pairs.iter().map(|&(k, _)| k).collect();
+        let expected_vals: Vec<u32> = cpu_pairs.iter().map(|&(_, v)| v).collect();
+
+        let usage_common = BufferUsage::STORAGE_BUFFER
+            | BufferUsage::TRANSFER_SRC
+            | BufferUsage::TRANSFER_DST
+            | BufferUsage::SHADER_DEVICE_ADDRESS;
+
+        // Input buffers
+        let keys_buffer = Buffer::from_iter(
+            memory_allocator.clone(),
+            BufferCreateInfo { usage: usage_common, ..Default::default() },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                    | MemoryTypeFilter::HOST_RANDOM_ACCESS
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                ..Default::default()
+            },
+            keys.clone(),
+        ).unwrap();
+
+        let values_buffer = Buffer::from_iter(
+            memory_allocator.clone(),
+            BufferCreateInfo { usage: usage_common, ..Default::default() },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                    | MemoryTypeFilter::HOST_RANDOM_ACCESS
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                ..Default::default()
+            },
+            values.clone(),
+        ).unwrap();
+
+        // Output buffers
+        let keys_out_buffer = Buffer::new_slice::<u32>(
+            memory_allocator.clone(),
+            BufferCreateInfo { usage: usage_common, ..Default::default() },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                    | MemoryTypeFilter::HOST_RANDOM_ACCESS
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                ..Default::default()
+            },
+            N as u64,
+        ).unwrap();
+
+        let values_out_buffer = Buffer::new_slice::<u32>(
+            memory_allocator.clone(),
+            BufferCreateInfo { usage: usage_common, ..Default::default() },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                    | MemoryTypeFilter::HOST_RANDOM_ACCESS
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                ..Default::default()
+            },
+            N as u64,
+        ).unwrap();
+
+        // Scratch buffer
+        let storage_req = sorter.get_storage_requirements(N as u32);
+        let storage_buffer = Buffer::new_slice::<u32>(
+            memory_allocator.clone(),
+            BufferCreateInfo { usage: storage_req.usage, ..Default::default() },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                    | MemoryTypeFilter::HOST_RANDOM_ACCESS
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                ..Default::default()
+            },
+            storage_req.size,
+        ).unwrap();
+
+        sorter.gpu_sort_dbg(
+            queue.clone(),
+            command_buffer_allocator.clone(),
+            keys.len() as u32,
+            keys_buffer.clone(),
+            Some(values_buffer.clone()),
+            storage_buffer.clone(),
+            keys_out_buffer.clone(),
+            Some(values_out_buffer.clone()),
+        );
+
+        // Validate results
+        let gpu_keys_out = keys_out_buffer.read().unwrap().to_vec();
+        let gpu_vals_out = values_out_buffer.read().unwrap().to_vec();
+
+        let mut pass = gpu_keys_out.as_slice() == expected_keys.as_slice()
+            && gpu_vals_out.as_slice() == expected_vals.as_slice();
+
+        if !pass {
+            let alt_keys = keys_buffer.read().unwrap().to_vec();
+            let alt_vals = values_buffer.read().unwrap().to_vec();
+            pass = alt_keys.as_slice() == expected_keys.as_slice()
+                && alt_vals.as_slice() == expected_vals.as_slice();
+        }
+
+        if pass {
+            println!("[RadixSort Test] Large key-value sort: PASS");
+        } else {
+            println!("[RadixSort Test] Large key-value sort: FAIL (mismatch detected)");
+        }
+    }
+}
+
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         // The objective of this example is to draw a triangle on a window. To do so, we first need
@@ -242,6 +687,14 @@ impl ApplicationHandler for App {
             device.physical_device().properties().device_name,
             device.physical_device().properties().device_type
         );
+
+        // Run standalone radix-sort tests before we continue with the normal setup
+        println!("Running radix-sort tests...");
+        test_radix_sort(device.clone(), general_queue.clone());
+        // sleep for 1 seconds
+        println!("Sleeping for 1 seconds...");
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        std::process::exit(0);
 
         let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
         let command_buffer_allocator = Arc::new(StandardCommandBufferAllocator::new(
