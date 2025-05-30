@@ -7,6 +7,9 @@ use rapier3d::dynamics::RigidBodyType;
 
 use vulkano::VulkanObject;
 use vulkano::command_buffer::{CommandBufferBeginInfo, CommandBufferLevel, RecordingCommandBuffer};
+use vulkano::instance::debug::{
+    DebugUtilsMessenger, DebugUtilsMessengerCallback, DebugUtilsMessengerCreateInfo,
+};
 use vulkano::sync::fence::FenceCreateInfo;
 use vulkano::sync::{self, GpuFuture};
 use vulkano::{
@@ -175,6 +178,7 @@ fn main() -> Result<(), impl Error> {
 struct App {
     instance: Arc<Instance>,
     rcx: Option<RenderContext>,
+    _callback: Option<DebugUtilsMessenger>,
 }
 
 struct RenderContext {
@@ -210,8 +214,19 @@ impl App {
         )
         .unwrap();
 
+        let _callback = DebugUtilsMessenger::new(
+            instance.clone(),
+            DebugUtilsMessengerCreateInfo::user_callback(unsafe {
+                DebugUtilsMessengerCallback::new(|message_severity, message_type, callback_data| {
+                    dbg!("Debug callback: {:?}", callback_data.message);
+                })
+            }),
+        )
+        .ok();
+
         App {
             instance,
+            _callback,
             rcx: None,
         }
     }

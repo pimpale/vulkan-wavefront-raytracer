@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::VecDeque, sync::Arc};
 
 use ash::vk::{Fence, PresentInfoKHR, SubmitInfo};
 use image::RgbaImage;
@@ -8,8 +8,9 @@ use vulkano::{
     Validated, VulkanError, VulkanObject,
     buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer},
     command_buffer::{
-        AutoCommandBufferBuilder, CommandBufferUsage, CopyBufferInfo, CopyBufferToImageInfo,
-        PrimaryCommandBufferAbstract, allocator::StandardCommandBufferAllocator,
+        AutoCommandBufferBuilder, CommandBuffer, CommandBufferUsage, CopyBufferInfo,
+        CopyBufferToImageInfo, PrimaryAutoCommandBuffer, PrimaryCommandBufferAbstract,
+        allocator::StandardCommandBufferAllocator,
     },
     descriptor_set::{
         DescriptorBufferInfo, DescriptorSet, WriteDescriptorSet,
@@ -224,6 +225,26 @@ pub fn get_surface_extent(surface: &Surface) -> [u32; 2] {
     window.inner_size().into()
 }
 
+struct FrameData {
+    swapchain: Vec<Arc<Swapchain>>,
+    swapchain_images: Vec<Arc<Image>>,
+    swapchain_image_views: Vec<Arc<ImageView>>,
+    command_buffer: Option<Arc<PrimaryAutoCommandBuffer>>,
+    buffers: Vec<Subbuffer<[u8]>>,
+}
+
+impl Default for FrameData {
+    fn default() -> Self {
+        Self {
+            swapchain: vec![],
+            swapchain_images: vec![],
+            swapchain_image_views: vec![],
+            command_buffer: None,
+            buffers: vec![],
+        }
+    }
+}
+
 pub struct Renderer {
     scale: u32,
     num_bounces: u32,
@@ -258,7 +279,6 @@ pub struct Renderer {
     // the sort keys for each bounce
     sort_keys: Vec<Subbuffer<[u32]>>,
     debug_info: Vec<Subbuffer<[f32]>>,
-    frame_finished_rendering2: Vec<Option<FenceSignalFuture<Box<dyn GpuFuture>>>>,
     frame_swapchain_image_acquired_semaphore: Vec<Arc<sync::semaphore::Semaphore>>,
     frame_finished_rendering_semaphore: Vec<Arc<sync::semaphore::Semaphore>>,
     frame_finished_rendering_fence: Vec<Arc<sync::fence::Fence>>,
@@ -273,6 +293,7 @@ pub struct Renderer {
     wdd_needs_rebuild: bool,
     frame_count: usize,
     rng: rand::prelude::ThreadRng,
+    old_frame_data: VecDeque<FrameData>,
 }
 
 fn load_textures(
@@ -597,8 +618,6 @@ impl Renderer {
         )
         .unwrap();
 
-        let frame_futures = (0..swapchain_images.len()).map(|_| None).collect();
-
         let frame_swapchain_image_acquired_semaphore = (0..swapchain_images.len())
             .map(|_| {
                 Arc::new(
@@ -653,7 +672,6 @@ impl Renderer {
             frame_swapchain_image_acquired_semaphore,
             frame_finished_rendering_semaphore,
             frame_finished_rendering_fence,
-            frame_finished_rendering2: frame_futures,
             memory_allocator,
             wdd_needs_rebuild: false,
             material_descriptor_set,
@@ -675,6 +693,7 @@ impl Renderer {
             sort_keys: vec![],
             debug_info: vec![],
             rng: rand::rng(),
+            old_frame_data: VecDeque::from([FrameData::default()]),
         };
 
         // create buffers
@@ -688,6 +707,16 @@ impl Renderer {
     }
 
     pub fn rebuild(&mut self, extent: [u32; 2]) {
+        self.old_frame_data[0]
+            .swapchain
+            .push(self.swapchain.clone());
+        self.old_frame_data[0]
+            .swapchain_images
+            .extend(self.swapchain_images.clone());
+        self.old_frame_data[0]
+            .swapchain_image_views
+            .extend(self.swapchain_image_views.clone());
+
         let (new_swapchain, new_images) = self
             .swapchain
             .recreate(SwapchainCreateInfo {
@@ -707,12 +736,21 @@ impl Renderer {
     }
 
     pub fn create_buffers(&mut self) {
+        self.old_frame_data[0]
+            .buffers
+            .extend(self.ray_origins.clone().into_iter().map(|b| b.into_bytes()));
         self.ray_origins = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
             true,
             self.scale,
             3 * (self.num_bounces + 1),
+        );
+        self.old_frame_data[0].buffers.extend(
+            self.ray_directions
+                .clone()
+                .into_iter()
+                .map(|b| b.into_bytes()),
         );
         self.ray_directions = window_size_dependent_setup(
             self.memory_allocator.clone(),
@@ -721,6 +759,12 @@ impl Renderer {
             self.scale,
             3 * (self.num_bounces + 1),
         );
+        self.old_frame_data[0].buffers.extend(
+            self.bounce_indices
+                .clone()
+                .into_iter()
+                .map(|b| b.into_bytes()),
+        );
         self.bounce_indices = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
@@ -728,12 +772,11 @@ impl Renderer {
             self.scale,
             1 * (self.num_bounces + 1),
         );
-        self.bounce_indices = window_size_dependent_setup(
-            self.memory_allocator.clone(),
-            &self.swapchain_images,
-            true,
-            self.scale,
-            1 * self.num_bounces,
+        self.old_frame_data[0].buffers.extend(
+            self.bounce_normals
+                .clone()
+                .into_iter()
+                .map(|b| b.into_bytes()),
         );
         self.bounce_normals = window_size_dependent_setup(
             self.memory_allocator.clone(),
@@ -742,12 +785,24 @@ impl Renderer {
             self.scale,
             3 * self.num_bounces,
         );
+        self.old_frame_data[0].buffers.extend(
+            self.bounce_emissivity
+                .clone()
+                .into_iter()
+                .map(|b| b.into_bytes()),
+        );
         self.bounce_emissivity = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
             true,
             self.scale,
             3 * self.num_bounces,
+        );
+        self.old_frame_data[0].buffers.extend(
+            self.bounce_reflectivity
+                .clone()
+                .into_iter()
+                .map(|b| b.into_bytes()),
         );
         self.bounce_reflectivity = window_size_dependent_setup(
             self.memory_allocator.clone(),
@@ -756,12 +811,24 @@ impl Renderer {
             self.scale,
             3 * self.num_bounces,
         );
+        self.old_frame_data[0].buffers.extend(
+            self.bounce_nee_mis_weight
+                .clone()
+                .into_iter()
+                .map(|b| b.into_bytes()),
+        );
         self.bounce_nee_mis_weight = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
             true,
             self.scale,
             1 * self.num_bounces,
+        );
+        self.old_frame_data[0].buffers.extend(
+            self.bounce_bsdf_pdf
+                .clone()
+                .into_iter()
+                .map(|b| b.into_bytes()),
         );
         self.bounce_bsdf_pdf = window_size_dependent_setup(
             self.memory_allocator.clone(),
@@ -770,12 +837,24 @@ impl Renderer {
             self.scale,
             1 * self.num_bounces,
         );
+        self.old_frame_data[0].buffers.extend(
+            self.bounce_nee_pdf
+                .clone()
+                .into_iter()
+                .map(|b| b.into_bytes()),
+        );
         self.bounce_nee_pdf = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
             true,
             self.scale,
             1 * self.num_bounces,
+        );
+        self.old_frame_data[0].buffers.extend(
+            self.bounce_outgoing_radiance
+                .clone()
+                .into_iter()
+                .map(|b| b.into_bytes()),
         );
         self.bounce_outgoing_radiance = window_size_dependent_setup(
             self.memory_allocator.clone(),
@@ -784,6 +863,12 @@ impl Renderer {
             self.scale,
             3 * self.num_bounces,
         );
+        self.old_frame_data[0].buffers.extend(
+            self.bounce_omega_sampling_pdf
+                .clone()
+                .into_iter()
+                .map(|b| b.into_bytes()),
+        );
         self.bounce_omega_sampling_pdf = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
@@ -791,6 +876,9 @@ impl Renderer {
             self.scale,
             1 * self.num_bounces,
         );
+        self.old_frame_data[0]
+            .buffers
+            .extend(self.sort_keys.clone().into_iter().map(|b| b.into_bytes()));
         self.sort_keys = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
@@ -799,12 +887,21 @@ impl Renderer {
             1,
         );
         // debug info (single image)
+        self.old_frame_data[0]
+            .buffers
+            .extend(self.debug_info.clone().into_iter().map(|b| b.into_bytes()));
         self.debug_info = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
             true,
             self.scale,
             3,
+        );
+        self.old_frame_data[0].buffers.extend(
+            self.sorter_storage
+                .clone()
+                .into_iter()
+                .map(|b| b.into_bytes()),
         );
 
         self.sorter_storage = self
@@ -861,13 +958,12 @@ impl Renderer {
     ) {
         unsafe {
             // wait for the last fence to be signaled (signaled = not in flight)
-            self.frame_finished_rendering_fence[(self.frame_count) % MIN_IMAGE_COUNT]
+            self.frame_finished_rendering_fence[self.frame_count % MIN_IMAGE_COUNT]
                 .wait(None)
                 .unwrap();
-            self.frame_finished_rendering_fence[(self.frame_count) % MIN_IMAGE_COUNT]
+            self.frame_finished_rendering_fence[self.frame_count % MIN_IMAGE_COUNT]
                 .reset()
                 .unwrap();
-
 
             let (
                 top_level_acceleration_structure,
@@ -879,6 +975,7 @@ impl Renderer {
             // Whenever the window resizes we need to recreate everything dependent on the window size.
             // In this example that includes the swapchain, the framebuffers and the dynamic state viewport.
             if self.wdd_needs_rebuild {
+                dbg!("rebuilding swapchain");
                 self.rebuild(get_surface_extent(&self.surface));
                 self.wdd_needs_rebuild = false;
                 println!("rebuilt swapchain");
@@ -919,6 +1016,7 @@ impl Renderer {
             };
 
             if is_suboptimal {
+                println!("swapchain suboptimal (at acquire)");
                 self.wdd_needs_rebuild = true;
             }
 
@@ -1381,11 +1479,13 @@ impl Renderer {
                 .dispatch(self.group_count_2d(&[extent[0] / poolsize, &extent[1] / poolsize]))
                 .unwrap();
 
-            unsafe {
+            let command_buffer = builder.build().unwrap();
+
+            {
                 let submit_fn = self.queue.device().fns().v1_0.queue_submit;
                 let present_fn = self.queue.device().fns().khr_swapchain.queue_present_khr;
 
-                let command_buffer_handle = builder.build().unwrap().handle();
+                let command_buffer_handle = command_buffer.handle();
 
                 submit_fn(
                     self.queue.handle(),
@@ -1412,7 +1512,7 @@ impl Renderer {
                 .unwrap();
 
                 // now we can present the image
-                present_fn(
+                let present_result = present_fn(
                     self.queue.handle(),
                     &PresentInfoKHR::default()
                         .wait_semaphores(&[self.frame_finished_rendering_semaphore
@@ -1421,76 +1521,33 @@ impl Renderer {
                         .swapchains(&[self.swapchain.handle()])
                         .image_indices(&[image_index]) as *const _,
                 )
-                .result()
-                .unwrap();
+                .result();
+
+                // handle present result
+                match present_result {
+                    Err(ash::vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+                        println!("swapchain out of date (at present)");
+                        self.wdd_needs_rebuild = true;
+                    }
+                    Err(e) => {
+                        panic!("error presenting swapchain image: {:?}", e);
+                    }
+                    Ok(_) => {}
+                }
             }
 
-            // let command_buffer_handle = builder.build().unwrap().handle();
-
-            // // try executing command buffer on queue directly, yielding a fence
-            // let fence = unsafe {
-            //     let submit_fn = self.queue.device().fns().v1_0.queue_submit;
-
-            //     let fence = sync::fence::Fence::new(
-            //         self.queue.device().clone(),
-            //         FenceCreateInfo {
-            //             ..Default::default()
-            //         },
-            //     )
-            //     .unwrap();
-
-            //     submit_fn(
-            //         self.queue.handle(),
-            //         1,
-            //         &SubmitInfo::default().command_buffers(&[command_buffer_handle]) as *const _,
-            //         fence.handle(),
-            //     )
-            //     .result()
-            //     .unwrap();
-
-            //     fence
-            // };
-
-            // let command_buffer = builder.build().unwrap();
-
-            // let last_cycle_future = std::mem::replace(
-            //     &mut self.frame_finished_rendering2[self.frame_count % MIN_IMAGE_COUNT],
-            //     None,
-            // );
-
-            // match last_cycle_future {
-            //     Some(f) => f.wait(None).unwrap(),
-            //     None => {}
-            // }
-
-            // let future = acquire_future
-            //     .then_execute(self.queue.clone(), command_buffer)
-            //     .unwrap()
-            //     .then_swapchain_present(
-            //         self.queue.clone(),
-            //         SwapchainPresentInfo::swapchain_image_index(
-            //             self.swapchain.clone(),
-            //             image_index,
-            //         ),
-            //     )
-            //     .boxed()
-            //     .then_signal_fence_and_flush();
-
-            // self.frame_finished_rendering2[self.frame_count % MIN_IMAGE_COUNT] =
-            //     match future.map_err(Validated::unwrap) {
-            //         Ok(future) => Some(future),
-            //         Err(VulkanError::OutOfDate) => {
-            //             self.wdd_needs_rebuild = true;
-            //             println!("swapchain out of date (at flush)");
-            //             None
-            //         }
-            //         Err(e) => {
-            //             println!("failed to flush future: {e}");
-            //             None
-            //         }
-            //     };
-
             self.frame_count = self.frame_count.wrapping_add(1);
+
+            // save keep-alive data
+            self.old_frame_data[0].command_buffer = Some(command_buffer.clone());
+
+            // create next frame data
+            self.old_frame_data.push_front(FrameData::default());
+
+            // remove old frame data
+            while self.old_frame_data.len() > self.n_swapchain_images() + 10 {
+                self.old_frame_data.pop_back();
+            }
         }
     }
 }
