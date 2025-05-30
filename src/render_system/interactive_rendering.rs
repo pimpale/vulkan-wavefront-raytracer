@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
-use ash::vk::Fence;
+use ash::vk::{Fence, PresentInfoKHR, SubmitInfo};
 use image::RgbaImage;
 use nalgebra::{Point3, Vector3};
 use rand::RngCore;
 use vulkano::{
-    Validated, VulkanError,
+    Validated, VulkanError, VulkanObject,
     buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer},
     command_buffer::{
         AutoCommandBufferBuilder, CommandBufferUsage, CopyBufferInfo, CopyBufferToImageInfo,
@@ -29,8 +29,15 @@ use vulkano::{
         PipelineShaderStageCreateInfo, compute::ComputePipelineCreateInfo,
         layout::PipelineDescriptorSetLayoutCreateInfo,
     },
-    swapchain::{self, Surface, Swapchain, SwapchainCreateInfo, SwapchainPresentInfo},
-    sync::{GpuFuture, future::FenceSignalFuture},
+    swapchain::{
+        self, AcquireNextImageInfo, AcquiredImage, Surface, Swapchain, SwapchainCreateInfo,
+        SwapchainPresentInfo,
+    },
+    sync::{
+        self, GpuFuture,
+        fence::{FenceCreateFlags, FenceCreateInfo},
+        future::FenceSignalFuture,
+    },
 };
 use winit::window::Window;
 
@@ -44,7 +51,7 @@ use super::{
     vertex::InstanceData,
 };
 
-const MIN_IMAGE_COUNT: usize = 3;
+const MIN_IMAGE_COUNT: usize = 2;
 
 pub fn get_device_for_rendering_on(
     instance: Arc<Instance>,
@@ -251,7 +258,10 @@ pub struct Renderer {
     // the sort keys for each bounce
     sort_keys: Vec<Subbuffer<[u32]>>,
     debug_info: Vec<Subbuffer<[f32]>>,
-    frame_finished_rendering: Vec<Option<FenceSignalFuture<Box<dyn GpuFuture>>>>,
+    frame_finished_rendering2: Vec<Option<FenceSignalFuture<Box<dyn GpuFuture>>>>,
+    frame_swapchain_image_acquired_semaphore: Vec<Arc<sync::semaphore::Semaphore>>,
+    frame_finished_rendering_semaphore: Vec<Arc<sync::semaphore::Semaphore>>,
+    frame_finished_rendering_fence: Vec<Arc<sync::fence::Fence>>,
     swapchain_images: Vec<Arc<Image>>,
     swapchain_image_views: Vec<Arc<ImageView>>,
     raygen_pipeline: Arc<ComputePipeline>,
@@ -589,6 +599,38 @@ impl Renderer {
 
         let frame_futures = (0..swapchain_images.len()).map(|_| None).collect();
 
+        let frame_swapchain_image_acquired_semaphore = (0..swapchain_images.len())
+            .map(|_| {
+                Arc::new(
+                    sync::semaphore::Semaphore::new(device.clone(), Default::default()).unwrap(),
+                )
+            })
+            .collect();
+
+        let frame_finished_rendering_semaphore = (0..swapchain_images.len())
+            .map(|_| {
+                Arc::new(
+                    sync::semaphore::Semaphore::new(device.clone(), Default::default()).unwrap(),
+                )
+            })
+            .collect();
+
+        // note that all fences start signaled. This is because we want to wait for the fence to be signaled before we can present the image.
+        let frame_finished_rendering_fence = (0..swapchain_images.len())
+            .map(|_| {
+                Arc::new(
+                    sync::fence::Fence::new(
+                        device.clone(),
+                        FenceCreateInfo {
+                            flags: FenceCreateFlags::SIGNALED,
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap(),
+                )
+            })
+            .collect();
+
         let sorter = Sorter::new(device.clone());
 
         let mut renderer = Renderer {
@@ -608,7 +650,10 @@ impl Renderer {
             descriptor_set_allocator,
             swapchain_images,
             swapchain_image_views,
-            frame_finished_rendering: frame_futures,
+            frame_swapchain_image_acquired_semaphore,
+            frame_finished_rendering_semaphore,
+            frame_finished_rendering_fence,
+            frame_finished_rendering2: frame_futures,
             memory_allocator,
             wdd_needs_rebuild: false,
             material_descriptor_set,
@@ -815,6 +860,15 @@ impl Renderer {
         rendering_preferences: RenderingPreferences,
     ) {
         unsafe {
+            // wait for the last fence to be signaled (signaled = not in flight)
+            self.frame_finished_rendering_fence[(self.frame_count) % MIN_IMAGE_COUNT]
+                .wait(None)
+                .unwrap();
+            self.frame_finished_rendering_fence[(self.frame_count) % MIN_IMAGE_COUNT]
+                .reset()
+                .unwrap();
+
+
             let (
                 top_level_acceleration_structure,
                 light_top_level_acceleration_structure,
@@ -838,8 +892,20 @@ impl Renderer {
             }
 
             // This operation returns the index of the image that we are allowed to draw upon.
-            let (image_index, suboptimal, acquire_future) =
-                match swapchain::acquire_next_image(self.swapchain.clone(), None)
+            let AcquiredImage {
+                image_index,
+                is_suboptimal,
+            } = {
+                match self
+                    .swapchain
+                    .acquire_next_image(&AcquireNextImageInfo {
+                        semaphore: Some(
+                            self.frame_swapchain_image_acquired_semaphore
+                                [self.frame_count % MIN_IMAGE_COUNT]
+                                .clone(),
+                        ),
+                        ..Default::default()
+                    })
                     .map_err(Validated::unwrap)
                 {
                     Ok(r) => r,
@@ -849,9 +915,10 @@ impl Renderer {
                         return;
                     }
                     Err(e) => panic!("Failed to acquire next image: {:?}", e),
-                };
+                }
+            };
 
-            if suboptimal {
+            if is_suboptimal {
                 self.wdd_needs_rebuild = true;
             }
 
@@ -929,6 +996,18 @@ impl Renderer {
 
                 // sort the rays (if we are not the first bounce)
                 if bounce > 0 {
+                    // NOTE: for now, we just copy
+                    builder
+                        .copy_buffer(CopyBufferInfo::buffers(
+                            self.bounce_indices[self.frame_count % MIN_IMAGE_COUNT]
+                                .clone()
+                                .slice(0..ray_count),
+                            self.bounce_indices[self.frame_count % MIN_IMAGE_COUNT]
+                                .clone()
+                                .slice(b * ray_count..(b + 1) * ray_count),
+                        ))
+                        .unwrap();
+
                     // self.sorter.sort_key_value(
                     //     &mut builder,
                     //     ray_count as u32,
@@ -1302,44 +1381,114 @@ impl Renderer {
                 .dispatch(self.group_count_2d(&[extent[0] / poolsize, &extent[1] / poolsize]))
                 .unwrap();
 
-            let command_buffer = builder.build().unwrap();
+            unsafe {
+                let submit_fn = self.queue.device().fns().v1_0.queue_submit;
+                let present_fn = self.queue.device().fns().khr_swapchain.queue_present_khr;
 
-            let last_cycle_future = std::mem::replace(
-                &mut self.frame_finished_rendering[self.frame_count % MIN_IMAGE_COUNT],
-                None,
-            );
+                let command_buffer_handle = builder.build().unwrap().handle();
 
-            match last_cycle_future {
-                Some(f) => f.wait(None).unwrap(),
-                None => {}
+                submit_fn(
+                    self.queue.handle(),
+                    1,
+                    &SubmitInfo::default()
+                        // we wait for the swapchain image to be acquired before submitting the command buffer
+                        // since the command buffer will write to the swapchain image
+                        .wait_semaphores(&[self.frame_swapchain_image_acquired_semaphore
+                            [self.frame_count % MIN_IMAGE_COUNT]
+                            .handle()])
+                        .command_buffers(&[command_buffer_handle])
+                        // we wait for
+                        .signal_semaphores(&[self.frame_finished_rendering_semaphore
+                            [self.frame_count % MIN_IMAGE_COUNT]
+                            .handle()]) as *const _,
+                    // submitting causes the fence to go to an unsignaled state
+                    // once it is finished processing, the fence will be signaled again
+                    // the reason we need both a fence and the semaphore is because the swapchain present function only accepts a semaphore
+                    // we need to be able to check the state of the fence on the next frame though, so we need to use both
+                    self.frame_finished_rendering_fence[self.frame_count % MIN_IMAGE_COUNT]
+                        .handle(),
+                )
+                .result()
+                .unwrap();
+
+                // now we can present the image
+                present_fn(
+                    self.queue.handle(),
+                    &PresentInfoKHR::default()
+                        .wait_semaphores(&[self.frame_finished_rendering_semaphore
+                            [self.frame_count % MIN_IMAGE_COUNT]
+                            .handle()])
+                        .swapchains(&[self.swapchain.handle()])
+                        .image_indices(&[image_index]) as *const _,
+                )
+                .result()
+                .unwrap();
             }
 
-            let future = acquire_future
-                .then_execute(self.queue.clone(), command_buffer)
-                .unwrap()
-                .then_swapchain_present(
-                    self.queue.clone(),
-                    SwapchainPresentInfo::swapchain_image_index(
-                        self.swapchain.clone(),
-                        image_index,
-                    ),
-                )
-                .boxed()
-                .then_signal_fence_and_flush();
+            // let command_buffer_handle = builder.build().unwrap().handle();
 
-            self.frame_finished_rendering[self.frame_count % MIN_IMAGE_COUNT] =
-                match future.map_err(Validated::unwrap) {
-                    Ok(future) => Some(future),
-                    Err(VulkanError::OutOfDate) => {
-                        self.wdd_needs_rebuild = true;
-                        println!("swapchain out of date (at flush)");
-                        None
-                    }
-                    Err(e) => {
-                        println!("failed to flush future: {e}");
-                        None
-                    }
-                };
+            // // try executing command buffer on queue directly, yielding a fence
+            // let fence = unsafe {
+            //     let submit_fn = self.queue.device().fns().v1_0.queue_submit;
+
+            //     let fence = sync::fence::Fence::new(
+            //         self.queue.device().clone(),
+            //         FenceCreateInfo {
+            //             ..Default::default()
+            //         },
+            //     )
+            //     .unwrap();
+
+            //     submit_fn(
+            //         self.queue.handle(),
+            //         1,
+            //         &SubmitInfo::default().command_buffers(&[command_buffer_handle]) as *const _,
+            //         fence.handle(),
+            //     )
+            //     .result()
+            //     .unwrap();
+
+            //     fence
+            // };
+
+            // let command_buffer = builder.build().unwrap();
+
+            // let last_cycle_future = std::mem::replace(
+            //     &mut self.frame_finished_rendering2[self.frame_count % MIN_IMAGE_COUNT],
+            //     None,
+            // );
+
+            // match last_cycle_future {
+            //     Some(f) => f.wait(None).unwrap(),
+            //     None => {}
+            // }
+
+            // let future = acquire_future
+            //     .then_execute(self.queue.clone(), command_buffer)
+            //     .unwrap()
+            //     .then_swapchain_present(
+            //         self.queue.clone(),
+            //         SwapchainPresentInfo::swapchain_image_index(
+            //             self.swapchain.clone(),
+            //             image_index,
+            //         ),
+            //     )
+            //     .boxed()
+            //     .then_signal_fence_and_flush();
+
+            // self.frame_finished_rendering2[self.frame_count % MIN_IMAGE_COUNT] =
+            //     match future.map_err(Validated::unwrap) {
+            //         Ok(future) => Some(future),
+            //         Err(VulkanError::OutOfDate) => {
+            //             self.wdd_needs_rebuild = true;
+            //             println!("swapchain out of date (at flush)");
+            //             None
+            //         }
+            //         Err(e) => {
+            //             println!("failed to flush future: {e}");
+            //             None
+            //         }
+            //     };
 
             self.frame_count = self.frame_count.wrapping_add(1);
         }

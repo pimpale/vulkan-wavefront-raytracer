@@ -806,13 +806,13 @@ impl ApplicationHandler for App {
             device.physical_device().properties().device_type
         );
 
-        // Run standalone radix-sort tests before we continue with the normal setup
-        println!("Running radix-sort tests...");
-        test_radix_sort(device.clone(), general_queue.clone());
-        // sleep for 1 seconds
-        println!("Sleeping for 1 seconds...");
-        std::thread::sleep(std::time::Duration::from_secs(1));
-        std::process::exit(0);
+        // // Run standalone radix-sort tests before we continue with the normal setup
+        // println!("Running radix-sort tests...");
+        // test_radix_sort(device.clone(), general_queue.clone());
+        // // sleep for 1 seconds
+        // println!("Sleeping for 1 seconds...");
+        // std::thread::sleep(std::time::Duration::from_secs(1));
+        // std::process::exit(0);
 
         let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
         let command_buffer_allocator = Arc::new(StandardCommandBufferAllocator::new(
