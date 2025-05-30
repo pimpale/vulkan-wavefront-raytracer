@@ -52,7 +52,7 @@ use super::{
     vertex::InstanceData,
 };
 
-const MIN_IMAGE_COUNT: usize = 2;
+const MIN_IMAGE_COUNT: usize = 3;
 
 pub fn get_device_for_rendering_on(
     instance: Arc<Instance>,
@@ -677,7 +677,6 @@ impl Renderer {
             material_descriptor_set,
             frame_count: 0,
             sorter,
-            sorter_storage: vec![],
             // buffers (to be created)
             ray_origins: vec![],
             ray_directions: vec![],
@@ -692,6 +691,7 @@ impl Renderer {
             bounce_omega_sampling_pdf: vec![],
             sort_keys: vec![],
             debug_info: vec![],
+            sorter_storage: vec![],
             rng: rand::rng(),
             old_frame_data: VecDeque::from([FrameData::default()]),
         };
@@ -707,15 +707,11 @@ impl Renderer {
     }
 
     pub fn rebuild(&mut self, extent: [u32; 2]) {
-        self.old_frame_data[0]
-            .swapchain
-            .push(self.swapchain.clone());
-        self.old_frame_data[0]
-            .swapchain_images
-            .extend(self.swapchain_images.clone());
-        self.old_frame_data[0]
-            .swapchain_image_views
-            .extend(self.swapchain_image_views.clone());
+        // wait for all fences to be signaled before proceeding with the rebuild
+        for (i, fence) in self.frame_finished_rendering_fence.iter().enumerate() {
+            dbg!("waiting for fence to be signaled", i);
+            fence.wait(None).unwrap();
+        }
 
         let (new_swapchain, new_images) = self
             .swapchain
@@ -736,9 +732,7 @@ impl Renderer {
     }
 
     pub fn create_buffers(&mut self) {
-        self.old_frame_data[0]
-            .buffers
-            .extend(self.ray_origins.clone().into_iter().map(|b| b.into_bytes()));
+        // ray origins
         self.ray_origins = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
@@ -746,12 +740,8 @@ impl Renderer {
             self.scale,
             3 * (self.num_bounces + 1),
         );
-        self.old_frame_data[0].buffers.extend(
-            self.ray_directions
-                .clone()
-                .into_iter()
-                .map(|b| b.into_bytes()),
-        );
+
+        // ray directions
         self.ray_directions = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
@@ -759,12 +749,8 @@ impl Renderer {
             self.scale,
             3 * (self.num_bounces + 1),
         );
-        self.old_frame_data[0].buffers.extend(
-            self.bounce_indices
-                .clone()
-                .into_iter()
-                .map(|b| b.into_bytes()),
-        );
+
+        // bounce indices
         self.bounce_indices = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
@@ -772,12 +758,8 @@ impl Renderer {
             self.scale,
             1 * (self.num_bounces + 1),
         );
-        self.old_frame_data[0].buffers.extend(
-            self.bounce_normals
-                .clone()
-                .into_iter()
-                .map(|b| b.into_bytes()),
-        );
+
+        // normals
         self.bounce_normals = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
@@ -785,12 +767,8 @@ impl Renderer {
             self.scale,
             3 * self.num_bounces,
         );
-        self.old_frame_data[0].buffers.extend(
-            self.bounce_emissivity
-                .clone()
-                .into_iter()
-                .map(|b| b.into_bytes()),
-        );
+
+        // emissivity
         self.bounce_emissivity = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
@@ -798,12 +776,8 @@ impl Renderer {
             self.scale,
             3 * self.num_bounces,
         );
-        self.old_frame_data[0].buffers.extend(
-            self.bounce_reflectivity
-                .clone()
-                .into_iter()
-                .map(|b| b.into_bytes()),
-        );
+
+        // reflectivity
         self.bounce_reflectivity = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
@@ -811,12 +785,8 @@ impl Renderer {
             self.scale,
             3 * self.num_bounces,
         );
-        self.old_frame_data[0].buffers.extend(
-            self.bounce_nee_mis_weight
-                .clone()
-                .into_iter()
-                .map(|b| b.into_bytes()),
-        );
+
+        // nee mis weight
         self.bounce_nee_mis_weight = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
@@ -824,12 +794,8 @@ impl Renderer {
             self.scale,
             1 * self.num_bounces,
         );
-        self.old_frame_data[0].buffers.extend(
-            self.bounce_bsdf_pdf
-                .clone()
-                .into_iter()
-                .map(|b| b.into_bytes()),
-        );
+
+        // bsdf pdf
         self.bounce_bsdf_pdf = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
@@ -837,12 +803,8 @@ impl Renderer {
             self.scale,
             1 * self.num_bounces,
         );
-        self.old_frame_data[0].buffers.extend(
-            self.bounce_nee_pdf
-                .clone()
-                .into_iter()
-                .map(|b| b.into_bytes()),
-        );
+
+        // nee pdf
         self.bounce_nee_pdf = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
@@ -850,12 +812,8 @@ impl Renderer {
             self.scale,
             1 * self.num_bounces,
         );
-        self.old_frame_data[0].buffers.extend(
-            self.bounce_outgoing_radiance
-                .clone()
-                .into_iter()
-                .map(|b| b.into_bytes()),
-        );
+
+        // outgoing radiance
         self.bounce_outgoing_radiance = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
@@ -863,12 +821,8 @@ impl Renderer {
             self.scale,
             3 * self.num_bounces,
         );
-        self.old_frame_data[0].buffers.extend(
-            self.bounce_omega_sampling_pdf
-                .clone()
-                .into_iter()
-                .map(|b| b.into_bytes()),
-        );
+
+        // omega sampling pdf
         self.bounce_omega_sampling_pdf = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
@@ -876,9 +830,8 @@ impl Renderer {
             self.scale,
             1 * self.num_bounces,
         );
-        self.old_frame_data[0]
-            .buffers
-            .extend(self.sort_keys.clone().into_iter().map(|b| b.into_bytes()));
+
+        // sort keys
         self.sort_keys = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
@@ -886,10 +839,8 @@ impl Renderer {
             self.scale,
             1,
         );
+
         // debug info (single image)
-        self.old_frame_data[0]
-            .buffers
-            .extend(self.debug_info.clone().into_iter().map(|b| b.into_bytes()));
         self.debug_info = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
@@ -897,13 +848,8 @@ impl Renderer {
             self.scale,
             3,
         );
-        self.old_frame_data[0].buffers.extend(
-            self.sorter_storage
-                .clone()
-                .into_iter()
-                .map(|b| b.into_bytes()),
-        );
 
+        // sorter storage
         self.sorter_storage = self
             .swapchain_images
             .iter()
@@ -1542,9 +1488,19 @@ impl Renderer {
             self.old_frame_data.push_front(FrameData::default());
 
             // remove old frame data
-            while self.old_frame_data.len() > self.n_swapchain_images() + 10 {
+            while self.old_frame_data.len() > self.n_swapchain_images() + 1 {
                 self.old_frame_data.pop_back();
             }
+        }
+    }
+}
+
+impl Drop for Renderer {
+    fn drop(&mut self) {
+        // wait for all fences to be signaled before dropping
+        for (i, fence) in self.frame_finished_rendering_fence.iter().enumerate() {
+            dbg!("waiting for fence to be signaled", i);
+            fence.wait(None).unwrap();
         }
     }
 }
