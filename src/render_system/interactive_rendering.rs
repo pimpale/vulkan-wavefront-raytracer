@@ -929,25 +929,25 @@ impl Renderer {
 
                 // sort the rays (if we are not the first bounce)
                 if bounce > 0 {
-                    // self.sorter.sort_key_value(
-                    //     &mut builder,
-                    //     ray_count as u32,
-                    //     // keys in (morton codes)
-                    //     self.sort_keys[self.frame_count % MIN_IMAGE_COUNT].clone(),
-                    //     // values in (index of the ray in memory (which is the same as the bounce index at the first bounce)
-                    //     self.bounce_indices[self.frame_count % MIN_IMAGE_COUNT]
-                    //         .clone()
-                    //         .slice(0..ray_count),
-                    //     self.sorter_storage[self.frame_count % MIN_IMAGE_COUNT].clone(),
-                    //     // keys out (we don't care about the sorted keys)
-                    //     self.debug_info[self.frame_count % MIN_IMAGE_COUNT]
-                    //         .clone()
-                    //         .reinterpret(),
-                    //     // values out (needs to be written to the bounce indices buffer that will be used for the next bounce)
-                    //     self.bounce_indices[self.frame_count % MIN_IMAGE_COUNT]
-                    //         .clone()
-                    //         .slice(b * ray_count..(b + 1) * ray_count),
-                    // );
+                    self.sorter.sort_key_value(
+                        &mut builder,
+                        ray_count as u32,
+                        // keys in (morton codes)
+                        self.sort_keys[self.frame_count % MIN_IMAGE_COUNT].clone(),
+                        // values in (index of the ray in memory (which is the same as the bounce index at the first bounce)
+                        self.bounce_indices[self.frame_count % MIN_IMAGE_COUNT]
+                            .clone()
+                            .slice(0..ray_count),
+                        self.sorter_storage[self.frame_count % MIN_IMAGE_COUNT].clone(),
+                        // keys out (we don't care about the sorted keys)
+                        self.debug_info[self.frame_count % MIN_IMAGE_COUNT]
+                            .clone()
+                            .reinterpret(),
+                        // values out (needs to be written to the bounce indices buffer that will be used for the next bounce)
+                        self.bounce_indices[self.frame_count % MIN_IMAGE_COUNT]
+                            .clone()
+                            .slice(b * ray_count..(b + 1) * ray_count),
+                    );
                 }
 
                 builder

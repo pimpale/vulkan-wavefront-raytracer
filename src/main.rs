@@ -214,19 +214,17 @@ impl App {
 }
 
 fn test_radix_sort(device: Arc<vulkano::device::Device>, queue: Arc<vulkano::device::Queue>) {
+    use rand::RngCore;
+    use render_system::radix_sort::Sorter;
     use vulkano::{
         buffer::{Buffer, BufferCreateInfo, BufferUsage},
         command_buffer::{
+            AutoCommandBufferBuilder, CommandBufferUsage, PrimaryAutoCommandBuffer,
             allocator::StandardCommandBufferAllocator,
-            AutoCommandBufferBuilder,
-            CommandBufferUsage,
-            PrimaryAutoCommandBuffer,
         },
         memory::allocator::{AllocationCreateInfo, MemoryTypeFilter},
         sync,
     };
-    use render_system::radix_sort::Sorter;
-    use rand::RngCore;
 
     // Allocators
     let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
@@ -309,17 +307,33 @@ fn test_radix_sort(device: Arc<vulkano::device::Device>, queue: Arc<vulkano::dev
         )
         .unwrap();
 
-        sorter.gpu_sort_dbg(
-            queue.clone(),
+        // sorter.gpu_sort_dbg(
+        //     queue.clone(),
+        //     command_buffer_allocator.clone(),
+        //     keys.len() as u32,
+        //     keys_buffer.clone(),
+        //     None,
+        //     storage_buffer.clone(),
+        //     keys_out_buffer.clone(),
+        //     None,
+        // );
+
+        let mut builder = AutoCommandBufferBuilder::primary(
             command_buffer_allocator.clone(),
+            queue.queue_family_index(),
+            CommandBufferUsage::OneTimeSubmit,
+        )
+        .unwrap();
+
+        sorter.sort(
+            &mut builder,
             keys.len() as u32,
             keys_buffer.clone(),
-            None,
             storage_buffer.clone(),
             keys_out_buffer.clone(),
-            None,
         );
 
+        submit_and_wait(builder);
 
         let gpu_sorted = keys_out_buffer.read().unwrap().to_vec();
         let alt_sorted = keys_buffer.read().unwrap().to_vec();
@@ -419,17 +433,34 @@ fn test_radix_sort(device: Arc<vulkano::device::Device>, queue: Arc<vulkano::dev
         )
         .unwrap();
 
+        // sorter.gpu_sort_dbg(
+        //     queue.clone(),
+        //     command_buffer_allocator.clone(),
+        //     keys.len() as u32,
+        //     keys_buffer.clone(),
+        //     Some(values_buffer.clone()),
+        //     storage_buffer.clone(),
+        //     keys_out_buffer.clone(),
+        //     Some(values_out_buffer.clone()),
+        // );
 
-        sorter.gpu_sort_dbg(
-            queue.clone(),
+        let mut builder = AutoCommandBufferBuilder::primary(
             command_buffer_allocator.clone(),
+            queue.queue_family_index(),
+            CommandBufferUsage::OneTimeSubmit,
+        )
+        .unwrap();
+
+        sorter.sort_key_value(
+            &mut builder,
             keys.len() as u32,
             keys_buffer.clone(),
-            Some(values_buffer.clone()),
+            values_buffer.clone(),
             storage_buffer.clone(),
             keys_out_buffer.clone(),
-            Some(values_out_buffer.clone()),
+            values_out_buffer.clone(),
         );
+        submit_and_wait(builder);
 
         let gpu_keys_out = keys_out_buffer.read().unwrap().to_vec();
         let gpu_vals_out = values_out_buffer.read().unwrap().to_vec();
@@ -453,11 +484,14 @@ fn test_radix_sort(device: Arc<vulkano::device::Device>, queue: Arc<vulkano::dev
 
     // ------------- Test 3: Large random keys-only sorting -------------
     {
-        use rand::{Rng, SeedableRng};
         use rand::rngs::StdRng;
+        use rand::{Rng, SeedableRng};
 
         const N: usize = 3_145_729; // Non power-of-two (>3 million)
-        println!("[RadixSort Test] Generating {} random keys (keys-only test)...", N);
+        println!(
+            "[RadixSort Test] Generating {} random keys (keys-only test)...",
+            N
+        );
 
         // Deterministic RNG for reproducibility
         let mut rng = StdRng::seed_from_u64(0xDEADBEEF);
@@ -474,7 +508,10 @@ fn test_radix_sort(device: Arc<vulkano::device::Device>, queue: Arc<vulkano::dev
         // Input / output buffers
         let keys_buffer = Buffer::from_iter(
             memory_allocator.clone(),
-            BufferCreateInfo { usage: usage_common, ..Default::default() },
+            BufferCreateInfo {
+                usage: usage_common,
+                ..Default::default()
+            },
             AllocationCreateInfo {
                 memory_type_filter: MemoryTypeFilter::PREFER_HOST
                     | MemoryTypeFilter::HOST_RANDOM_ACCESS
@@ -482,11 +519,15 @@ fn test_radix_sort(device: Arc<vulkano::device::Device>, queue: Arc<vulkano::dev
                 ..Default::default()
             },
             keys.clone(),
-        ).unwrap();
+        )
+        .unwrap();
 
         let keys_out_buffer = Buffer::new_slice::<u32>(
             memory_allocator.clone(),
-            BufferCreateInfo { usage: usage_common, ..Default::default() },
+            BufferCreateInfo {
+                usage: usage_common,
+                ..Default::default()
+            },
             AllocationCreateInfo {
                 memory_type_filter: MemoryTypeFilter::PREFER_HOST
                     | MemoryTypeFilter::HOST_RANDOM_ACCESS
@@ -494,13 +535,17 @@ fn test_radix_sort(device: Arc<vulkano::device::Device>, queue: Arc<vulkano::dev
                 ..Default::default()
             },
             N as u64,
-        ).unwrap();
+        )
+        .unwrap();
 
         // Scratch/storage buffer
         let storage_req = sorter.get_storage_requirements(N as u32);
         let storage_buffer = Buffer::new_slice::<u32>(
             memory_allocator.clone(),
-            BufferCreateInfo { usage: storage_req.usage, ..Default::default() },
+            BufferCreateInfo {
+                usage: storage_req.usage,
+                ..Default::default()
+            },
             AllocationCreateInfo {
                 memory_type_filter: MemoryTypeFilter::PREFER_HOST
                     | MemoryTypeFilter::HOST_RANDOM_ACCESS
@@ -508,7 +553,8 @@ fn test_radix_sort(device: Arc<vulkano::device::Device>, queue: Arc<vulkano::dev
                 ..Default::default()
             },
             storage_req.size,
-        ).unwrap();
+        )
+        .unwrap();
 
         sorter.gpu_sort_dbg(
             queue.clone(),
@@ -537,18 +583,22 @@ fn test_radix_sort(device: Arc<vulkano::device::Device>, queue: Arc<vulkano::dev
 
     // ------------- Test 4: Large random key-value sorting -------------
     {
-        use rand::{Rng, SeedableRng};
         use rand::rngs::StdRng;
+        use rand::{Rng, SeedableRng};
 
         const N: usize = 3_145_729; // Same non power-of-two size
-        println!("[RadixSort Test] Generating {} random key/value pairs (key-value test)...", N);
+        println!(
+            "[RadixSort Test] Generating {} random key/value pairs (key-value test)...",
+            N
+        );
 
         let mut rng = StdRng::seed_from_u64(0xCAFEBABEu64);
         let keys: Vec<u32> = (0..N).map(|_| rng.next_u32()).collect();
         let values: Vec<u32> = (0..N as u32).collect();
 
         // Expected CPU sort
-        let mut cpu_pairs: Vec<(u32, u32)> = keys.iter().copied().zip(values.iter().copied()).collect();
+        let mut cpu_pairs: Vec<(u32, u32)> =
+            keys.iter().copied().zip(values.iter().copied()).collect();
         cpu_pairs.sort_by_key(|&(k, _)| k);
         let expected_keys: Vec<u32> = cpu_pairs.iter().map(|&(k, _)| k).collect();
         let expected_vals: Vec<u32> = cpu_pairs.iter().map(|&(_, v)| v).collect();
@@ -561,7 +611,10 @@ fn test_radix_sort(device: Arc<vulkano::device::Device>, queue: Arc<vulkano::dev
         // Input buffers
         let keys_buffer = Buffer::from_iter(
             memory_allocator.clone(),
-            BufferCreateInfo { usage: usage_common, ..Default::default() },
+            BufferCreateInfo {
+                usage: usage_common,
+                ..Default::default()
+            },
             AllocationCreateInfo {
                 memory_type_filter: MemoryTypeFilter::PREFER_HOST
                     | MemoryTypeFilter::HOST_RANDOM_ACCESS
@@ -569,11 +622,15 @@ fn test_radix_sort(device: Arc<vulkano::device::Device>, queue: Arc<vulkano::dev
                 ..Default::default()
             },
             keys.clone(),
-        ).unwrap();
+        )
+        .unwrap();
 
         let values_buffer = Buffer::from_iter(
             memory_allocator.clone(),
-            BufferCreateInfo { usage: usage_common, ..Default::default() },
+            BufferCreateInfo {
+                usage: usage_common,
+                ..Default::default()
+            },
             AllocationCreateInfo {
                 memory_type_filter: MemoryTypeFilter::PREFER_HOST
                     | MemoryTypeFilter::HOST_RANDOM_ACCESS
@@ -581,12 +638,16 @@ fn test_radix_sort(device: Arc<vulkano::device::Device>, queue: Arc<vulkano::dev
                 ..Default::default()
             },
             values.clone(),
-        ).unwrap();
+        )
+        .unwrap();
 
         // Output buffers
         let keys_out_buffer = Buffer::new_slice::<u32>(
             memory_allocator.clone(),
-            BufferCreateInfo { usage: usage_common, ..Default::default() },
+            BufferCreateInfo {
+                usage: usage_common,
+                ..Default::default()
+            },
             AllocationCreateInfo {
                 memory_type_filter: MemoryTypeFilter::PREFER_HOST
                     | MemoryTypeFilter::HOST_RANDOM_ACCESS
@@ -594,11 +655,15 @@ fn test_radix_sort(device: Arc<vulkano::device::Device>, queue: Arc<vulkano::dev
                 ..Default::default()
             },
             N as u64,
-        ).unwrap();
+        )
+        .unwrap();
 
         let values_out_buffer = Buffer::new_slice::<u32>(
             memory_allocator.clone(),
-            BufferCreateInfo { usage: usage_common, ..Default::default() },
+            BufferCreateInfo {
+                usage: usage_common,
+                ..Default::default()
+            },
             AllocationCreateInfo {
                 memory_type_filter: MemoryTypeFilter::PREFER_HOST
                     | MemoryTypeFilter::HOST_RANDOM_ACCESS
@@ -606,13 +671,17 @@ fn test_radix_sort(device: Arc<vulkano::device::Device>, queue: Arc<vulkano::dev
                 ..Default::default()
             },
             N as u64,
-        ).unwrap();
+        )
+        .unwrap();
 
         // Scratch buffer
         let storage_req = sorter.get_storage_requirements(N as u32);
         let storage_buffer = Buffer::new_slice::<u32>(
             memory_allocator.clone(),
-            BufferCreateInfo { usage: storage_req.usage, ..Default::default() },
+            BufferCreateInfo {
+                usage: storage_req.usage,
+                ..Default::default()
+            },
             AllocationCreateInfo {
                 memory_type_filter: MemoryTypeFilter::PREFER_HOST
                     | MemoryTypeFilter::HOST_RANDOM_ACCESS
@@ -620,7 +689,8 @@ fn test_radix_sort(device: Arc<vulkano::device::Device>, queue: Arc<vulkano::dev
                 ..Default::default()
             },
             storage_req.size,
-        ).unwrap();
+        )
+        .unwrap();
 
         sorter.gpu_sort_dbg(
             queue.clone(),

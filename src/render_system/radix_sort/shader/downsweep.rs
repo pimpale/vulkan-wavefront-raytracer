@@ -18,6 +18,29 @@ const int PARTITION_SIZE = PARTITION_DIVISION * WORKGROUP_SIZE;
 
 layout (local_size_x = WORKGROUP_SIZE) in;
 
+// dummy dependencies so that vulkano inserts a pipeline barrier
+layout (set = 0, binding = 0) buffer StorageBuffer {
+   uint dummy_storage[];
+};
+
+layout (set = 0, binding = 1) buffer DummyKeys {
+  uint dummy_keys[];
+};
+
+layout (set = 0, binding = 2) buffer DummyKeysOut {
+  uint dummy_keys_out[];
+};
+
+uint dummy_use(uint always_zero) {
+  if(always_zero == 0) {
+    return 0;
+  }
+  return dummy_storage[0] + dummy_keys[0] + dummy_keys_out[0];
+}
+
+// end dummy dependencies
+
+
 layout (buffer_reference, std430) readonly buffer ElementCount {
   uint elementCount;
 };
@@ -80,6 +103,7 @@ uint GetBitCount(uvec4 value) {
 }
 
 void main() {
+  dummy_use(uint(gl_SubgroupInvocationID > 100));
   uint threadIndex = gl_SubgroupInvocationID;  // 0..31 or 0..63
   uint subgroupIndex = gl_SubgroupID;  // 0..15 or 0..7
   uint index = subgroupIndex * gl_SubgroupSize + threadIndex;
