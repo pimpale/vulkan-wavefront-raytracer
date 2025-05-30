@@ -961,9 +961,6 @@ impl Renderer {
             self.frame_finished_rendering_fence[self.frame_count % MIN_IMAGE_COUNT]
                 .wait(None)
                 .unwrap();
-            self.frame_finished_rendering_fence[self.frame_count % MIN_IMAGE_COUNT]
-                .reset()
-                .unwrap();
 
             let (
                 top_level_acceleration_structure,
