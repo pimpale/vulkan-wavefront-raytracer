@@ -5,40 +5,22 @@ use image::RgbaImage;
 use nalgebra::{Point3, Vector3};
 use rand::RngCore;
 use vulkano::{
-    Validated, VulkanError, VulkanObject,
-    buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer},
-    command_buffer::{
-        AutoCommandBufferBuilder, CommandBuffer, CommandBufferUsage, CopyBufferInfo,
-        CopyBufferToImageInfo, PrimaryAutoCommandBuffer, PrimaryCommandBufferAbstract,
-        allocator::StandardCommandBufferAllocator,
-    },
-    descriptor_set::{
-        DescriptorBufferInfo, DescriptorSet, WriteDescriptorSet,
-        allocator::StandardDescriptorSetAllocator,
-        layout::{DescriptorBindingFlags, DescriptorSetLayoutCreateFlags},
-    },
-    device::{
-        Device, DeviceCreateInfo, DeviceExtensions, DeviceFeatures, DeviceOwned, Queue,
-        QueueCreateInfo, QueueFlags, physical::PhysicalDeviceType,
-    },
-    format::Format,
-    image::{Image, ImageCreateInfo, ImageType, ImageUsage, sampler::Sampler, view::ImageView},
-    instance::Instance,
-    memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator},
-    pipeline::{
-        ComputePipeline, Pipeline, PipelineBindPoint, PipelineLayout,
-        PipelineShaderStageCreateInfo, compute::ComputePipelineCreateInfo,
-        layout::PipelineDescriptorSetLayoutCreateInfo,
-    },
-    swapchain::{
+    buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer}, command_buffer::{
+        allocator::StandardCommandBufferAllocator, AutoCommandBufferBuilder, CommandBuffer, CommandBufferBeginInfo, CommandBufferLevel, CommandBufferUsage, CopyBufferInfo, CopyBufferToImageInfo, PrimaryAutoCommandBuffer, PrimaryCommandBufferAbstract, RecordingCommandBuffer
+    }, descriptor_set::{
+        allocator::StandardDescriptorSetAllocator, layout::{DescriptorBindingFlags, DescriptorSetLayoutCreateFlags}, DescriptorBufferInfo, DescriptorSet, WriteDescriptorSet
+    }, device::{
+        physical::PhysicalDeviceType, Device, DeviceCreateInfo, DeviceExtensions, DeviceFeatures, DeviceOwned, Queue, QueueCreateInfo, QueueFlags
+    }, format::Format, image::{
+        sampler::Sampler, view::ImageView, Image, ImageAspect, ImageAspects, ImageCreateInfo, ImageLayout, ImageSubresourceRange, ImageType, ImageUsage
+    }, instance::Instance, memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator}, pipeline::{
+        compute::ComputePipelineCreateInfo, layout::PipelineDescriptorSetLayoutCreateInfo, ComputePipeline, Pipeline, PipelineBindPoint, PipelineLayout, PipelineShaderStageCreateInfo
+    }, swapchain::{
         self, AcquireNextImageInfo, AcquiredImage, Surface, Swapchain, SwapchainCreateInfo,
         SwapchainPresentInfo,
-    },
-    sync::{
-        self, GpuFuture,
-        fence::{FenceCreateFlags, FenceCreateInfo},
-        future::FenceSignalFuture,
-    },
+    }, sync::{
+        self, fence::{FenceCreateFlags, FenceCreateInfo}, future::FenceSignalFuture, AccessFlags, DependencyInfo, GpuFuture, ImageMemoryBarrier, MemoryBarrier, PipelineStages
+    }, Validated, VulkanError, VulkanObject
 };
 use winit::window::Window;
 
@@ -229,7 +211,7 @@ struct FrameData {
     swapchain: Vec<Arc<Swapchain>>,
     swapchain_images: Vec<Arc<Image>>,
     swapchain_image_views: Vec<Arc<ImageView>>,
-    command_buffer: Option<Arc<PrimaryAutoCommandBuffer>>,
+    command_buffer: Option<CommandBuffer>,
     buffers: Vec<Subbuffer<[u8]>>,
 }
 
@@ -963,10 +945,14 @@ impl Renderer {
                 self.wdd_needs_rebuild = true;
             }
 
-            let mut builder = AutoCommandBufferBuilder::primary(
+            let mut builder = RecordingCommandBuffer::new(
                 self.command_buffer_allocator.clone(),
                 self.queue.queue_family_index(),
-                CommandBufferUsage::OneTimeSubmit,
+                CommandBufferLevel::Primary,
+                CommandBufferBeginInfo {
+                    usage: CommandBufferUsage::OneTimeSubmit,
+                    ..Default::default()
+                },
             )
             .unwrap();
 
@@ -977,22 +963,38 @@ impl Renderer {
             // blank the debug info buffer
             builder
                 .fill_buffer(
-                    self.debug_info[self.frame_count % MIN_IMAGE_COUNT]
+                    &self.debug_info[self.frame_count % MIN_IMAGE_COUNT]
                         .clone()
                         .reinterpret::<[u32]>(),
                     0,
                 )
                 .unwrap();
 
+            // insert pipeline barrier from transfer to compute
+            builder
+                .pipeline_barrier(&DependencyInfo {
+                    memory_barriers: [MemoryBarrier {
+                        src_stages: PipelineStages::ALL_TRANSFER,
+                        src_access: AccessFlags::TRANSFER_WRITE,
+                        dst_stages: PipelineStages::COMPUTE_SHADER,
+                        dst_access: AccessFlags::SHADER_READ,
+                        ..Default::default()
+                    }]
+                    .as_ref()
+                    .into(),
+                    ..Default::default()
+                })
+                .unwrap();
+
             // dispatch raygen pipeline
             builder
-                .bind_pipeline_compute(self.raygen_pipeline.clone())
+                .bind_pipeline_compute(&self.raygen_pipeline)
                 .unwrap()
                 .push_descriptor_set(
                     PipelineBindPoint::Compute,
-                    self.raygen_pipeline.layout().clone(),
+                    &self.raygen_pipeline.layout(),
                     0,
-                    vec![
+                    &[
                         WriteDescriptorSet::buffer(
                             0,
                             self.ray_origins[self.frame_count % MIN_IMAGE_COUNT].clone(),
@@ -1005,14 +1007,13 @@ impl Renderer {
                             2,
                             self.bounce_indices[self.frame_count % MIN_IMAGE_COUNT].clone(),
                         ),
-                    ]
-                    .into(),
+                    ],
                 )
                 .unwrap()
                 .push_constants(
-                    self.raygen_pipeline.layout().clone(),
+                    &self.raygen_pipeline.layout(),
                     0,
-                    raygen::PushConstants {
+                    &raygen::PushConstants {
                         camera: raygen::Camera {
                             eye: eye.coords,
                             front,
@@ -1035,57 +1036,89 @@ impl Renderer {
                 // for bounce in 0..0 {
                 let b = bounce as u64;
 
+                // wait for the previous bounce to finish writing to memory
+                builder
+                    .pipeline_barrier(&DependencyInfo {
+                        memory_barriers: [MemoryBarrier {
+                            src_stages: PipelineStages::COMPUTE_SHADER,
+                            src_access: AccessFlags::SHADER_WRITE,
+                            dst_stages: PipelineStages::COMPUTE_SHADER,
+                            dst_access: AccessFlags::SHADER_READ,
+                            ..Default::default()
+                        }]
+                        .as_ref()
+                        .into(),
+                        ..Default::default()
+                    })
+                    .unwrap();
+
                 // sort the rays (if we are not the first bounce)
                 if bounce > 0 {
                     // NOTE: for now, we just copy
-                    builder
-                        .copy_buffer(CopyBufferInfo::buffers(
-                            self.bounce_indices[self.frame_count % MIN_IMAGE_COUNT]
-                                .clone()
-                                .slice(0..ray_count),
-                            self.bounce_indices[self.frame_count % MIN_IMAGE_COUNT]
-                                .clone()
-                                .slice(b * ray_count..(b + 1) * ray_count),
-                        ))
-                        .unwrap();
+                    // builder
+                    //     .copy_buffer(&CopyBufferInfo::buffers(
+                    //         self.bounce_indices[self.frame_count % MIN_IMAGE_COUNT]
+                    //             .clone()
+                    //             .slice(0..ray_count),
+                    //         self.bounce_indices[self.frame_count % MIN_IMAGE_COUNT]
+                    //             .clone()
+                    //             .slice(b * ray_count..(b + 1) * ray_count),
+                    //     ))
+                    //     .unwrap();
 
-                    // self.sorter.sort_key_value(
-                    //     &mut builder,
-                    //     ray_count as u32,
-                    //     // keys in (morton codes)
-                    //     self.sort_keys[self.frame_count % MIN_IMAGE_COUNT].clone(),
-                    //     // values in (index of the ray in memory (which is the same as the bounce index at the first bounce)
-                    //     self.bounce_indices[self.frame_count % MIN_IMAGE_COUNT]
-                    //         .clone()
-                    //         .slice(0..ray_count),
-                    //     self.sorter_storage[self.frame_count % MIN_IMAGE_COUNT].clone(),
-                    //     // keys out (we don't care about the sorted keys)
-                    //     self.debug_info[self.frame_count % MIN_IMAGE_COUNT]
-                    //         .clone()
-                    //         .reinterpret(),
-                    //     // values out (needs to be written to the bounce indices buffer that will be used for the next bounce)
-                    //     self.bounce_indices[self.frame_count % MIN_IMAGE_COUNT]
-                    //         .clone()
-                    //         .slice(b * ray_count..(b + 1) * ray_count),
-                    // );
+                    // builder
+                    //     .pipeline_barrier(&DependencyInfo {
+                    //         memory_barriers: [MemoryBarrier {
+                    //             src_stages: PipelineStages::ALL_TRANSFER,
+                    //             src_access: AccessFlags::TRANSFER_WRITE,
+                    //             dst_stages: PipelineStages::COMPUTE_SHADER,
+                    //             dst_access: AccessFlags::SHADER_READ,
+                    //             ..Default::default()
+                    //         }]
+                    //         .as_ref()
+                    //         .into(),
+                    //         ..Default::default()
+                    //     })
+                    //     .unwrap();
+
+                    self.sorter.sort_key_value(
+                        &mut builder,
+                        ray_count as u32,
+                        // keys in (morton codes)
+                        self.sort_keys[self.frame_count % MIN_IMAGE_COUNT].clone(),
+                        // values in (index of the ray in memory (which is the same as the bounce index at the first bounce)
+                        self.bounce_indices[self.frame_count % MIN_IMAGE_COUNT]
+                            .clone()
+                            .slice(0..ray_count),
+                        self.sorter_storage[self.frame_count % MIN_IMAGE_COUNT].clone(),
+                        // keys out (we don't care about the sorted keys)
+                        self.debug_info[self.frame_count % MIN_IMAGE_COUNT]
+                            .clone()
+                            .reinterpret(),
+                        // values out (needs to be written to the bounce indices buffer that will be used for the next bounce)
+                        self.bounce_indices[self.frame_count % MIN_IMAGE_COUNT]
+                            .clone()
+                            .slice(b * ray_count..(b + 1) * ray_count),
+                    );
                 }
 
                 builder
-                    .bind_pipeline_compute(self.raytrace_pipeline.clone())
+                    .bind_pipeline_compute(&self.raytrace_pipeline)
                     .unwrap()
                     // bind material descriptor set
                     .bind_descriptor_sets(
                         PipelineBindPoint::Compute,
-                        self.raytrace_pipeline.layout().clone(),
+                        &self.raytrace_pipeline.layout(),
                         0,
-                        self.material_descriptor_set.clone(),
+                        &[&self.material_descriptor_set.as_raw()],
+                        &[],
                     )
                     .unwrap()
                     .push_descriptor_set(
                         PipelineBindPoint::Compute,
-                        self.raytrace_pipeline.layout().clone(),
+                        &self.raytrace_pipeline.layout(),
                         1,
-                        vec![
+                        &[
                             WriteDescriptorSet::acceleration_structure(
                                 0,
                                 top_level_acceleration_structure.clone(),
@@ -1198,14 +1231,13 @@ impl Renderer {
                                 13,
                                 self.debug_info[self.frame_count % MIN_IMAGE_COUNT].clone(),
                             ),
-                        ]
-                        .into(),
+                        ],
                     )
                     .unwrap()
                     .push_constants(
-                        self.raytrace_pipeline.layout().clone(),
+                        &self.raytrace_pipeline.layout(),
                         0,
-                        raytrace::PushConstants {
+                        &raytrace::PushConstants {
                             nee_type: rendering_preferences.nee_type,
                             bounce: bounce,
                             xsize: rt_extent[0],
@@ -1222,20 +1254,37 @@ impl Renderer {
             // bind nee pdf pipeline
             // this is done in a separate pass for better memory access patterns
             builder
-                .bind_pipeline_compute(self.nee_pdf_pipeline.clone())
+                .bind_pipeline_compute(&self.nee_pdf_pipeline)
                 .unwrap();
 
             // dispatch nee pdf pipeline
             for bounce in 0..(self.num_bounces - 1) {
                 // for bounce in 0..0 {
                 let b = bounce as u64;
+
+                // wait for previous writes to finish
+                builder
+                    .pipeline_barrier(&DependencyInfo {
+                        memory_barriers: [MemoryBarrier {
+                            src_stages: PipelineStages::COMPUTE_SHADER,
+                            src_access: AccessFlags::SHADER_WRITE,
+                            dst_stages: PipelineStages::COMPUTE_SHADER,
+                            dst_access: AccessFlags::SHADER_READ,
+                            ..Default::default()
+                        }]
+                        .as_ref()
+                        .into(),
+                        ..Default::default()
+                    })
+                    .unwrap();
+
                 // compute nee pdf
                 builder
                     .push_descriptor_set(
                         PipelineBindPoint::Compute,
-                        self.nee_pdf_pipeline.layout().clone(),
+                        &self.nee_pdf_pipeline.layout(),
                         0,
-                        vec![
+                        &[
                             WriteDescriptorSet::acceleration_structure(
                                 0,
                                 light_top_level_acceleration_structure.clone(),
@@ -1292,14 +1341,13 @@ impl Renderer {
                                     range: b * sect_sz..(b + 1) * sect_sz,
                                 },
                             ),
-                        ]
-                        .into(),
+                        ],
                     )
                     .unwrap()
                     .push_constants(
-                        self.nee_pdf_pipeline.layout().clone(),
+                        &self.nee_pdf_pipeline.layout(),
                         0,
-                        nee_pdf::PushConstants {
+                        &nee_pdf::PushConstants {
                             nee_type: rendering_preferences.nee_type,
                             xsize: rt_extent[0],
                             ysize: rt_extent[1],
@@ -1312,14 +1360,30 @@ impl Renderer {
             }
 
             // compute the outgoing radiance at all bounces
+
             builder
-                .bind_pipeline_compute(self.outgoing_radiance_pipeline.clone())
+                .pipeline_barrier(&DependencyInfo {
+                    memory_barriers: [MemoryBarrier {
+                        src_stages: PipelineStages::COMPUTE_SHADER,
+                        src_access: AccessFlags::SHADER_WRITE,
+                        dst_stages: PipelineStages::COMPUTE_SHADER,
+                        dst_access: AccessFlags::SHADER_READ,
+                        ..Default::default()
+                    }]
+                    .as_ref()
+                    .into(),
+                    ..Default::default()
+                })
+                .unwrap();
+
+            builder
+                .bind_pipeline_compute(&self.outgoing_radiance_pipeline)
                 .unwrap()
                 .push_descriptor_set(
                     PipelineBindPoint::Compute,
-                    self.outgoing_radiance_pipeline.layout().clone(),
+                    &self.outgoing_radiance_pipeline.layout(),
                     0,
-                    vec![
+                    &[
                         // WriteDescriptorSet::buffer(
                         //     0,
                         //     self.bounce_origins[self.frame_count % MIN_IMAGE_COUNT].clone(),
@@ -1358,14 +1422,13 @@ impl Renderer {
                             self.bounce_omega_sampling_pdf[self.frame_count % MIN_IMAGE_COUNT]
                                 .clone(),
                         ),
-                    ]
-                    .into(),
+                    ],
                 )
                 .unwrap()
                 .push_constants(
-                    self.outgoing_radiance_pipeline.layout().clone(),
+                    &self.outgoing_radiance_pipeline.layout(),
                     0,
-                    outgoing_radiance::PushConstants {
+                    &outgoing_radiance::PushConstants {
                         num_bounces: self.num_bounces,
                         xsize: rt_extent[0],
                         ysize: rt_extent[1],
@@ -1376,15 +1439,48 @@ impl Renderer {
                 .unwrap();
 
             // aggregate the samples and write to swapchain image
+
+            builder
+                .pipeline_barrier(&DependencyInfo {
+                    memory_barriers: [MemoryBarrier {
+                        src_stages: PipelineStages::COMPUTE_SHADER,
+                        src_access: AccessFlags::SHADER_WRITE,
+                        dst_stages: PipelineStages::COMPUTE_SHADER,
+                        dst_access: AccessFlags::SHADER_READ,
+                        ..Default::default()
+                    }]
+                    .as_ref()
+                    .into(),
+                    image_memory_barriers: vec![{
+                        let mut b = ImageMemoryBarrier::image(
+                            self.swapchain_images[image_index as usize].clone(),
+                        );
+                        b.src_stages = PipelineStages::TOP_OF_PIPE;
+                        b.src_access = AccessFlags::empty();
+                        b.dst_stages = PipelineStages::COMPUTE_SHADER;
+                        b.dst_access = AccessFlags::SHADER_WRITE;
+                        b.old_layout = ImageLayout::PresentSrc;
+                        b.new_layout = ImageLayout::General;
+                        b.subresource_range = ImageSubresourceRange {
+                            aspects: ImageAspects::COLOR,
+                            mip_levels: 0..1,
+                            array_layers: 0..1,
+                        };
+                        b
+                    }]
+                    .into(),                    ..Default::default()
+                })
+                .unwrap();
+
             let poolsize = 1;
             builder
-                .bind_pipeline_compute(self.postprocess_pipeline.clone())
+                .bind_pipeline_compute(&self.postprocess_pipeline)
                 .unwrap()
                 .push_descriptor_set(
                     PipelineBindPoint::Compute,
-                    self.postprocess_pipeline.layout().clone(),
+                    &self.postprocess_pipeline.layout(),
                     0,
-                    vec![
+                    &[
                         WriteDescriptorSet::buffer_with_range(
                             0,
                             DescriptorBufferInfo {
@@ -1403,14 +1499,13 @@ impl Renderer {
                             2,
                             self.swapchain_image_views[image_index as usize].clone(),
                         ),
-                    ]
-                    .into(),
+                    ],
                 )
                 .unwrap()
                 .push_constants(
-                    self.postprocess_pipeline.layout().clone(),
+                    &self.postprocess_pipeline.layout(),
                     0,
-                    postprocess::PushConstants {
+                    &postprocess::PushConstants {
                         debug_view: rendering_preferences.debug_view,
                         srcscale: poolsize * self.scale,
                         dstscale: poolsize,
@@ -1422,7 +1517,32 @@ impl Renderer {
                 .dispatch(self.group_count_2d(&[extent[0] / poolsize, &extent[1] / poolsize]))
                 .unwrap();
 
-            let command_buffer = builder.build().unwrap();
+            // transition image to present_src
+            builder
+                .pipeline_barrier(&DependencyInfo {
+                    image_memory_barriers: vec![{
+                        let mut b = ImageMemoryBarrier::image(
+                            self.swapchain_images[image_index as usize].clone(),
+                        );
+                        b.src_stages = PipelineStages::COMPUTE_SHADER;
+                        b.src_access = AccessFlags::SHADER_WRITE;
+                        b.dst_stages = PipelineStages::BOTTOM_OF_PIPE;
+                        b.dst_access = AccessFlags::empty();
+                        b.old_layout = ImageLayout::General;
+                        b.new_layout = ImageLayout::PresentSrc;
+                        b.subresource_range = ImageSubresourceRange {
+                            aspects: ImageAspects::COLOR,
+                            mip_levels: 0..1,
+                            array_layers: 0..1,
+                        };
+                        b
+                    }]
+                    .into(),
+                    ..Default::default()
+                })
+                .unwrap();
+
+            let command_buffer = builder.end().unwrap();
 
             {
                 let submit_fn = self.queue.device().fns().v1_0.queue_submit;
@@ -1482,7 +1602,7 @@ impl Renderer {
             self.frame_count = self.frame_count.wrapping_add(1);
 
             // save keep-alive data
-            self.old_frame_data[0].command_buffer = Some(command_buffer.clone());
+            self.old_frame_data[0].command_buffer = Some(command_buffer);
 
             // create next frame data
             self.old_frame_data.push_front(FrameData::default());
