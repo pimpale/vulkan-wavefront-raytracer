@@ -866,6 +866,8 @@ impl ApplicationHandler for App {
 
         match event {
             WindowEvent::CloseRequested => {
+                // wait for queue to be idle
+                rcx.world.wait_idle();
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {

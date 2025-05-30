@@ -12,6 +12,7 @@ use rapier3d::geometry::Collider;
 use threadpool::ThreadPool;
 use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
 use vulkano::descriptor_set::allocator::StandardDescriptorSetAllocator;
+use vulkano::device::Device;
 use vulkano::device::DeviceOwned;
 use vulkano::device::Queue;
 use vulkano::memory::allocator::StandardMemoryAllocator;
@@ -88,6 +89,8 @@ pub enum WorldChange {
 }
 
 pub struct GameWorld {
+    general_queue: Arc<Queue>,
+    transfer_queue: Arc<Queue>,
     entities: HashMap<u32, Entity>,
     ego_entity_id: u32,
     scene: Rc<RefCell<Scene<u32>>>,
@@ -103,6 +106,16 @@ pub struct GameWorld {
 }
 
 impl GameWorld {
+    pub fn wait_idle(&self) {
+        dbg!("waiting for transfer queue to be idle");
+        self.transfer_queue
+            .with(|mut queue| queue.wait_idle().unwrap());
+        dbg!("waiting for general queue to be idle");
+        self.general_queue
+            .with(|mut queue| queue.wait_idle().unwrap());
+        dbg!("done waiting for queues to be idle");
+    }
+
     pub fn new(
         general_queue: Arc<Queue>,
         transfer_queue: Arc<Queue>,
@@ -167,6 +180,8 @@ impl GameWorld {
             EgoControlsManager::new(camera.clone(), chunk_querier, block_table.clone());
 
         GameWorld {
+            general_queue,
+            transfer_queue,
             entities: HashMap::new(),
             scene,
             scene_uploader,
@@ -199,11 +214,14 @@ impl GameWorld {
         for change in changes {
             match change {
                 WorldChange::GlobalEntityAdd(entity_id, entity_creation_data) => {
-                    self.entities.insert(*entity_id, Entity {
-                        mesh: entity_creation_data.mesh.clone(),
-                        isometry: entity_creation_data.isometry.clone(),
-                        physics_data: entity_creation_data.physics.clone(),
-                    });
+                    self.entities.insert(
+                        *entity_id,
+                        Entity {
+                            mesh: entity_creation_data.mesh.clone(),
+                            isometry: entity_creation_data.isometry.clone(),
+                            physics_data: entity_creation_data.physics.clone(),
+                        },
+                    );
                 }
                 WorldChange::GlobalEntityRemove(entity_id) => {
                     self.entities.remove(&entity_id);
@@ -270,15 +288,9 @@ impl GameWorld {
         // render to screen
         {
             let mut mutscene = self.scene.borrow_mut();
-        self.renderer.render(
-            &mut mutscene,
-            eye,
-            front,
-            right,
-            up,
-            rendering_preferences,
-        );
-    }
+            self.renderer
+                .render(&mut mutscene, eye, front, right, up, rendering_preferences);
+        }
 
         // at this point we can now garbage collect removed entities from the last step (but not this step yet!)
         // this is because the the entities might potentially be in use until the next frame has started rendering
@@ -290,11 +302,14 @@ impl GameWorld {
 
     // add a new entity to the world
     pub fn add_entity(&mut self, entity_id: u32, entity_creation_data: EntityCreationData) {
-        self.entities.insert(entity_id, Entity {
-            mesh: entity_creation_data.mesh.clone(),
-            isometry: entity_creation_data.isometry.clone(),
-            physics_data: entity_creation_data.physics.clone(),
-        });
+        self.entities.insert(
+            entity_id,
+            Entity {
+                mesh: entity_creation_data.mesh.clone(),
+                isometry: entity_creation_data.isometry.clone(),
+                physics_data: entity_creation_data.physics.clone(),
+            },
+        );
         self.changes_since_last_step
             .push(WorldChange::GlobalEntityAdd(
                 entity_id,
@@ -310,7 +325,7 @@ impl GameWorld {
     }
 
     pub fn handle_window_event(&mut self, input: winit::event::WindowEvent) {
-            self.events_since_last_step.push(input);
+        self.events_since_last_step.push(input);
     }
 
     pub fn scene_uploader(&self) -> &SceneUploader {

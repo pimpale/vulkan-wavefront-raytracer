@@ -444,11 +444,6 @@ void main() {
     const vec3 direction = input_direction[bid];
     const uint seed = murmur3_combine(invocation_seed, bid);
 
-    // debug info
-    if(bounce == 1) {
-        output_debug_info[bid] = vec3(float(gl_SubgroupInvocationID)/32);
-    }
-
     // return early from terminal samples (ray direction is 0, 0, 0)
     if(direction == vec3(0.0)) {
         output_origin[bid] = origin;
@@ -622,8 +617,8 @@ void main() {
     output_reflectivity[bid] = reflectivity;
     output_nee_mis_weight[bid] = light_pdf_mis_weight;
     output_bsdf_pdf[bid] = bsdf_pdf;
-    // output_sort_key[bid] = morton_encode(new_direction);
-    output_sort_key[bid] = bid;
+    output_sort_key[bid] = morton_encode(new_direction);
+    // output_sort_key[bid] = bid;
 }
 ",
 }

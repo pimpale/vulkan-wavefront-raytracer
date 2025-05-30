@@ -5,22 +5,45 @@ use image::RgbaImage;
 use nalgebra::{Point3, Vector3};
 use rand::RngCore;
 use vulkano::{
-    buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer}, command_buffer::{
-        allocator::StandardCommandBufferAllocator, AutoCommandBufferBuilder, CommandBuffer, CommandBufferBeginInfo, CommandBufferLevel, CommandBufferUsage, CopyBufferInfo, CopyBufferToImageInfo, PrimaryAutoCommandBuffer, PrimaryCommandBufferAbstract, RecordingCommandBuffer
-    }, descriptor_set::{
-        allocator::StandardDescriptorSetAllocator, layout::{DescriptorBindingFlags, DescriptorSetLayoutCreateFlags}, DescriptorBufferInfo, DescriptorSet, WriteDescriptorSet
-    }, device::{
-        physical::PhysicalDeviceType, Device, DeviceCreateInfo, DeviceExtensions, DeviceFeatures, DeviceOwned, Queue, QueueCreateInfo, QueueFlags
-    }, format::Format, image::{
-        sampler::Sampler, view::ImageView, Image, ImageAspect, ImageAspects, ImageCreateInfo, ImageLayout, ImageSubresourceRange, ImageType, ImageUsage
-    }, instance::Instance, memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator}, pipeline::{
-        compute::ComputePipelineCreateInfo, layout::PipelineDescriptorSetLayoutCreateInfo, ComputePipeline, Pipeline, PipelineBindPoint, PipelineLayout, PipelineShaderStageCreateInfo
-    }, swapchain::{
+    Validated, VulkanError, VulkanObject,
+    buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer},
+    command_buffer::{
+        AutoCommandBufferBuilder, CommandBuffer, CommandBufferBeginInfo, CommandBufferLevel,
+        CommandBufferUsage, CopyBufferInfo, CopyBufferToImageInfo, PrimaryAutoCommandBuffer,
+        PrimaryCommandBufferAbstract, RecordingCommandBuffer,
+        allocator::StandardCommandBufferAllocator,
+    },
+    descriptor_set::{
+        DescriptorBufferInfo, DescriptorSet, WriteDescriptorSet,
+        allocator::StandardDescriptorSetAllocator,
+        layout::{DescriptorBindingFlags, DescriptorSetLayoutCreateFlags},
+    },
+    device::{
+        Device, DeviceCreateInfo, DeviceExtensions, DeviceFeatures, DeviceOwned, Queue,
+        QueueCreateInfo, QueueFlags, physical::PhysicalDeviceType,
+    },
+    format::Format,
+    image::{
+        Image, ImageAspect, ImageAspects, ImageCreateInfo, ImageLayout, ImageSubresourceRange,
+        ImageType, ImageUsage, sampler::Sampler, view::ImageView,
+    },
+    instance::Instance,
+    memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator},
+    pipeline::{
+        ComputePipeline, Pipeline, PipelineBindPoint, PipelineLayout,
+        PipelineShaderStageCreateInfo, compute::ComputePipelineCreateInfo,
+        layout::PipelineDescriptorSetLayoutCreateInfo,
+    },
+    swapchain::{
         self, AcquireNextImageInfo, AcquiredImage, Surface, Swapchain, SwapchainCreateInfo,
         SwapchainPresentInfo,
-    }, sync::{
-        self, fence::{FenceCreateFlags, FenceCreateInfo}, future::FenceSignalFuture, AccessFlags, DependencyInfo, GpuFuture, ImageMemoryBarrier, MemoryBarrier, PipelineStages
-    }, Validated, VulkanError, VulkanObject
+    },
+    sync::{
+        self, AccessFlags, DependencyInfo, GpuFuture, ImageMemoryBarrier, MemoryBarrier,
+        PipelineStages,
+        fence::{FenceCreateFlags, FenceCreateInfo},
+        future::FenceSignalFuture,
+    },
 };
 use winit::window::Window;
 
@@ -30,7 +53,7 @@ use super::{
     bvh::BvhNode,
     radix_sort::{Sorter, SorterStorageRequirements},
     scene::Scene,
-    shader::{compact, nee_pdf, outgoing_radiance, postprocess, raygen, raytrace},
+    shader::{nee_pdf, outgoing_radiance, postprocess, raygen, raytrace},
     vertex::InstanceData,
 };
 
@@ -267,7 +290,6 @@ pub struct Renderer {
     swapchain_images: Vec<Arc<Image>>,
     swapchain_image_views: Vec<Arc<ImageView>>,
     raygen_pipeline: Arc<ComputePipeline>,
-    compact_pipeline: Arc<ComputePipeline>,
     raytrace_pipeline: Arc<ComputePipeline>,
     nee_pdf_pipeline: Arc<ComputePipeline>,
     outgoing_radiance_pipeline: Arc<ComputePipeline>,
@@ -423,39 +445,6 @@ impl Renderer {
 
                 // enable push descriptor for set 1
                 layout_create_info.set_layouts[1].flags |=
-                    DescriptorSetLayoutCreateFlags::PUSH_DESCRIPTOR;
-
-                PipelineLayout::new(
-                    device.clone(),
-                    layout_create_info
-                        .into_pipeline_layout_create_info(device.clone())
-                        .unwrap(),
-                )
-                .unwrap()
-            };
-
-            ComputePipeline::new(
-                device.clone(),
-                None,
-                ComputePipelineCreateInfo::stage_layout(stage, layout),
-            )
-            .unwrap()
-        };
-
-        let compact_pipeline = {
-            let cs = compact::load(device.clone())
-                .unwrap()
-                .entry_point("main")
-                .unwrap();
-
-            let stage = PipelineShaderStageCreateInfo::new(cs);
-
-            let layout = {
-                let mut layout_create_info =
-                    PipelineDescriptorSetLayoutCreateInfo::from_stages(&[stage.clone()]);
-
-                // enable push descriptor for set 0
-                layout_create_info.set_layouts[0].flags |=
                     DescriptorSetLayoutCreateFlags::PUSH_DESCRIPTOR;
 
                 PipelineLayout::new(
@@ -644,7 +633,6 @@ impl Renderer {
             swapchain,
             raygen_pipeline,
             raytrace_pipeline,
-            compact_pipeline,
             nee_pdf_pipeline,
             outgoing_radiance_pipeline,
             postprocess_pipeline,
@@ -738,7 +726,7 @@ impl Renderer {
             &self.swapchain_images,
             true,
             self.scale,
-            1 * (self.num_bounces + 1),
+            1 * self.num_bounces,
         );
 
         // normals
@@ -1468,7 +1456,8 @@ impl Renderer {
                         };
                         b
                     }]
-                    .into(),                    ..Default::default()
+                    .into(),
+                    ..Default::default()
                 })
                 .unwrap();
 
@@ -1611,16 +1600,6 @@ impl Renderer {
             while self.old_frame_data.len() > self.n_swapchain_images() + 1 {
                 self.old_frame_data.pop_back();
             }
-        }
-    }
-}
-
-impl Drop for Renderer {
-    fn drop(&mut self) {
-        // wait for all fences to be signaled before dropping
-        for (i, fence) in self.frame_finished_rendering_fence.iter().enumerate() {
-            dbg!("waiting for fence to be signaled", i);
-            fence.wait(None).unwrap();
         }
     }
 }
