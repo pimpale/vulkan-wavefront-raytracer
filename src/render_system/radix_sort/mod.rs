@@ -16,7 +16,7 @@ use vulkano::{
         ComputePipeline, Pipeline, PipelineLayout, PipelineShaderStageCreateInfo,
         compute::ComputePipelineCreateInfo, layout::PipelineDescriptorSetLayoutCreateInfo,
     },
-    sync::GpuFuture,
+    sync::{AccessFlags, DependencyInfo, GpuFuture, MemoryBarrier, PipelineStages},
 };
 
 mod shader;
@@ -286,6 +286,22 @@ impl Sorter {
             for i in 0..4 {
                 let pass = i;
 
+                builder
+                    .pipeline_barrier(&DependencyInfo {
+                        memory_barriers: [MemoryBarrier {
+                            src_stages: PipelineStages::ALL_TRANSFER
+                                | PipelineStages::COMPUTE_SHADER,
+                            src_access: AccessFlags::TRANSFER_WRITE | AccessFlags::SHADER_WRITE,
+                            dst_stages: PipelineStages::COMPUTE_SHADER,
+                            dst_access: AccessFlags::SHADER_READ,
+                            ..Default::default()
+                        }]
+                        .as_ref()
+                        .into(),
+                        ..Default::default()
+                    })
+                    .unwrap();
+
                 // Set up push constants using buffer slices
                 let mut keys_in_reference = keys_buffer.device_address().unwrap().get();
                 let mut keys_out_reference = keys_out_buffer.device_address().unwrap().get();
@@ -344,6 +360,19 @@ impl Sorter {
 
                 // Spine pass
                 builder
+                    .pipeline_barrier(&DependencyInfo {
+                        memory_barriers: [MemoryBarrier {
+                            src_stages: PipelineStages::COMPUTE_SHADER,
+                            src_access: AccessFlags::SHADER_WRITE,
+                            dst_stages: PipelineStages::COMPUTE_SHADER,
+                            dst_access: AccessFlags::SHADER_READ,
+                            ..Default::default()
+                        }]
+                        .as_ref()
+                        .into(),
+                        ..Default::default()
+                    })
+                    .unwrap()
                     .bind_pipeline_compute(&self.spine_pipeline)
                     .unwrap()
                     .push_constants(
@@ -358,6 +387,22 @@ impl Sorter {
                     )
                     .unwrap()
                     .dispatch([RADIX, 1, 1])
+                    .unwrap();
+
+                // memory barrier
+                builder
+                    .pipeline_barrier(&DependencyInfo {
+                        memory_barriers: [MemoryBarrier {
+                            src_stages: PipelineStages::COMPUTE_SHADER,
+                            src_access: AccessFlags::SHADER_WRITE,
+                            dst_stages: PipelineStages::COMPUTE_SHADER,
+                            dst_access: AccessFlags::SHADER_READ,
+                            ..Default::default()
+                        }]
+                        .as_ref()
+                        .into(),
+                        ..Default::default()
+                    })
                     .unwrap();
 
                 // Downsweep pass
@@ -401,6 +446,21 @@ impl Sorter {
 
                 builder.dispatch([partition_count, 1, 1]).unwrap();
             }
+
+            builder
+                .pipeline_barrier(&DependencyInfo {
+                    memory_barriers: [MemoryBarrier {
+                        src_stages: PipelineStages::COMPUTE_SHADER,
+                        src_access: AccessFlags::SHADER_WRITE,
+                        dst_stages: PipelineStages::ALL_COMMANDS,
+                        dst_access: AccessFlags::MEMORY_READ,
+                        ..Default::default()
+                    }]
+                    .as_ref()
+                    .into(),
+                    ..Default::default()
+                })
+                .unwrap();
         }
     }
 
