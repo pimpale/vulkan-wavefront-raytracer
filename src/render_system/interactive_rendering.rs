@@ -284,6 +284,7 @@ pub struct Renderer {
     // the sort keys for each bounce
     sort_keys: Vec<Subbuffer<[u32]>>,
     debug_info: Vec<Subbuffer<[f32]>>,
+    debug_info_2: Vec<Subbuffer<[f32]>>,
     frame_swapchain_image_acquired_semaphore: Vec<Arc<sync::semaphore::Semaphore>>,
     frame_finished_rendering_semaphore: Vec<Arc<sync::semaphore::Semaphore>>,
     frame_finished_rendering_fence: Vec<Arc<sync::fence::Fence>>,
@@ -661,6 +662,7 @@ impl Renderer {
             bounce_omega_sampling_pdf: vec![],
             sort_keys: vec![],
             debug_info: vec![],
+            debug_info_2: vec![],
             sorter_storage: vec![],
             rng: rand::rng(),
             old_frame_data: VecDeque::from([FrameData::default()]),
@@ -818,6 +820,13 @@ impl Renderer {
             self.scale,
             3,
         );
+        self.debug_info_2 = window_size_dependent_setup(
+            self.memory_allocator.clone(),
+            &self.swapchain_images,
+            true,
+            self.scale,
+            3,
+        );
 
         // sorter storage
         self.sorter_storage = self
@@ -948,10 +957,18 @@ impl Renderer {
             let extent = [extent_3d[0], extent_3d[1]];
             let rt_extent = [extent[0] * self.scale, extent[1] * self.scale];
 
-            // blank the debug info buffer
+            // blank the debug info and debug info 2 buffer
             builder
                 .fill_buffer(
                     &self.debug_info[self.frame_count % MIN_IMAGE_COUNT]
+                        .clone()
+                        .reinterpret::<[u32]>(),
+                    0,
+                )
+                .unwrap();
+            builder
+                .fill_buffer(
+                    &self.debug_info_2[self.frame_count % MIN_IMAGE_COUNT]
                         .clone()
                         .reinterpret::<[u32]>(),
                     0,
@@ -1080,7 +1097,7 @@ impl Renderer {
                             .slice(0..ray_count),
                         self.sorter_storage[self.frame_count % MIN_IMAGE_COUNT].clone(),
                         // keys out (we don't care about the sorted keys)
-                        self.debug_info[self.frame_count % MIN_IMAGE_COUNT]
+                        self.debug_info_2[self.frame_count % MIN_IMAGE_COUNT]
                             .clone()
                             .reinterpret(),
                         // values out (needs to be written to the bounce indices buffer that will be used for the next bounce)
@@ -1227,6 +1244,7 @@ impl Renderer {
                         0,
                         &raytrace::PushConstants {
                             nee_type: rendering_preferences.nee_type,
+                            sort_type: rendering_preferences.sort_type,
                             bounce: bounce,
                             xsize: rt_extent[0],
                             ysize: rt_extent[1],
@@ -1239,6 +1257,23 @@ impl Renderer {
                     .unwrap();
             }
 
+
+            // wait for previous writes to finish
+            builder
+                .pipeline_barrier(&DependencyInfo {
+                    memory_barriers: [MemoryBarrier {
+                        src_stages: PipelineStages::COMPUTE_SHADER,
+                        src_access: AccessFlags::SHADER_WRITE,
+                        dst_stages: PipelineStages::COMPUTE_SHADER,
+                        dst_access: AccessFlags::SHADER_READ,
+                        ..Default::default()
+                    }]
+                    .as_ref()
+                    .into(),
+                    ..Default::default()
+                })
+                .unwrap();
+
             // bind nee pdf pipeline
             // this is done in a separate pass for better memory access patterns
             builder
@@ -1249,22 +1284,6 @@ impl Renderer {
             for bounce in 0..(self.num_bounces - 1) {
                 // for bounce in 0..0 {
                 let b = bounce as u64;
-
-                // wait for previous writes to finish
-                builder
-                    .pipeline_barrier(&DependencyInfo {
-                        memory_barriers: [MemoryBarrier {
-                            src_stages: PipelineStages::COMPUTE_SHADER,
-                            src_access: AccessFlags::SHADER_WRITE,
-                            dst_stages: PipelineStages::COMPUTE_SHADER,
-                            dst_access: AccessFlags::SHADER_READ,
-                            ..Default::default()
-                        }]
-                        .as_ref()
-                        .into(),
-                        ..Default::default()
-                    })
-                    .unwrap();
 
                 // compute nee pdf
                 builder

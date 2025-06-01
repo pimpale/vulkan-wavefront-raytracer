@@ -115,6 +115,16 @@ impl Manager for EgoControlsManager {
             camera.set_rendering_preferences(current_prefs);
         }
 
+        if UserInputState::key_pressed(window_events, KeyCode::KeyO) {
+            let mut current_prefs = camera.rendering_preferences();
+            current_prefs.sort_type = match current_prefs.sort_type {
+                0 => 1,
+                _ => 0,
+            };
+            dbg!(current_prefs.sort_type);
+            camera.set_rendering_preferences(current_prefs);
+        }
+
         let (cam_eye, cam_front, cam_right, cam_up) = camera.eye_front_right_up();
 
         let mut changes = vec![];

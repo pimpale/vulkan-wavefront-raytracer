@@ -104,6 +104,7 @@ layout(set = 1, binding = 13, scalar) writeonly restrict buffer OutputsDebugInfo
 layout(push_constant, scalar) uniform PushConstants {
     uint bounce;
     uint nee_type;
+    uint sort_type;
     uint invocation_seed;
     uint xsize;
     uint ysize;
@@ -408,27 +409,28 @@ uint spreadBits(uint x) {
     return x;
 }
 
-// Encodes a 3D direction vector into a 30-bit Morton code (Z-order curve).
-// Maps the direction from [-1, 1] per component to [0, 1023] integer coords,
-// then interleaves the bits.
-uint morton_encode(vec3 d) {
-    // Map direction from [-1, 1] to [0, 1] range
-    // Normalize first to handle potential non-unit vectors, although directions should ideally be normalized
-    vec3 mapped_d = (normalize(d) + vec3(1.0)) * 0.5;
-
-    // Scale to [0, 1023] (10 bits per dimension) and convert to uint
-    const float max_coord = 1023.0;
-    uvec3 ijk = uvec3(clamp(mapped_d * max_coord, 0.0, max_coord)); // Clamp to be safe
-
-    // Spread the bits of each component
+uint interleaveBits(uvec3 ijk) {
     uint sx = spreadBits(ijk.x); // ... 00x9 00x8 ... 00x0
     uint sy = spreadBits(ijk.y); // ... 00y9 00y8 ... 00y0
     uint sz = spreadBits(ijk.z); // ... 00z9 00z8 ... 00z0
+    return (ijk.x << 2) | (ijk.y << 1) | ijk.z;
+}
 
-    // Interleave the spread bits: zyxzyxzyx...
-    uint morton = (sz << 2) | (sy << 1) | sx;
 
-    return morton;
+// Encodes a 3D origin position into a 30-bit Morton code (Z-order curve).
+// The expected coordinate domain for each axis is roughly [-32768, 32768].
+// Each component is remapped to the integer range [0, 1023] (10 bits) before
+// interleaving the bits.
+uvec3 discretizePosition(vec3 p) {
+    // Map from approximately [-500, 500] → [0, 1]
+    const float min_coord = -500.0;
+    const float range     = 1000.0;     // max - min
+    vec3 mapped_p = clamp((p - vec3(min_coord)) / range, 0.0, 1.0);
+
+    // Scale to [0, 1023] and convert to integers
+    const float max_10bit = 1023.0;
+    uvec3 ijk = uvec3(mapped_p * max_10bit);
+    return ijk;
 }
 
 void main() {
@@ -440,6 +442,9 @@ void main() {
     // tensor layout: [y, x, channel]
     const uint bid = input_bounce_index[gl_GlobalInvocationID.x];
     
+    if(bounce== 1) {
+        output_debug_info[gl_GlobalInvocationID.x] = vec3(discretizePosition(input_origin[bid]))/1023.0;
+    }
     const vec3 origin = input_origin[bid];
     const vec3 direction = input_direction[bid];
     const uint seed = murmur3_combine(invocation_seed, bid);
@@ -617,8 +622,12 @@ void main() {
     output_reflectivity[bid] = reflectivity;
     output_nee_mis_weight[bid] = light_pdf_mis_weight;
     output_bsdf_pdf[bid] = bsdf_pdf;
-    output_sort_key[bid] = morton_encode(new_direction);
-    // output_sort_key[bid] = bid;
+    
+    if(sort_type == 0) {
+        output_sort_key[bid] = bid;
+    } else {
+        output_sort_key[bid] = interleaveBits(discretizePosition(new_origin));
+    }
 }
 ",
 }

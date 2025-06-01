@@ -40,6 +40,8 @@ pub struct RenderingPreferences {
     pub nee_type: u32,
     // 0 == no debug view, 1 == debug view
     pub debug_view: u32,
+    // 0 == no sort, 1 == sort
+    pub sort_type: u32,
 }
 
 impl Default for RenderingPreferences {
@@ -47,6 +49,7 @@ impl Default for RenderingPreferences {
         RenderingPreferences {
             nee_type: 0,
             debug_view: 0,
+            sort_type: 0,
         }
     }
 }

@@ -801,7 +801,7 @@ impl ApplicationHandler for App {
                 .create_window(
                     Window::default_attributes()
                         .with_title("FLOATING")
-                        .with_inner_size(PhysicalSize::new(1920, 1080)),
+                        .with_inner_size(PhysicalSize::new(1000, 1000)),
                 )
                 .unwrap(),
         );
