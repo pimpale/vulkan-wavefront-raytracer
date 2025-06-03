@@ -1,6 +1,7 @@
 vulkano_shaders::shader! {
     ty: "compute",
     linalg_type: "nalgebra",
+    spirv_version: "1.3",
     src: r"
 #version 460
 #extension GL_EXT_ray_query: require
@@ -9,6 +10,7 @@ vulkano_shaders::shader! {
 #extension GL_EXT_shader_explicit_arithmetic_types_int64: require
 #extension GL_EXT_nonuniform_qualifier: require
 #extension GL_KHR_shader_subgroup_basic: require
+#extension GL_KHR_shader_subgroup_arithmetic: require
 
 #define M_PI 3.1415926535897932384626433832795
 #define EPSILON_BLOCK 0.001
@@ -442,9 +444,9 @@ void main() {
     // tensor layout: [y, x, channel]
     const uint bid = input_bounce_index[gl_GlobalInvocationID.x];
     
-    if(bounce== 1) {
-        output_debug_info[gl_GlobalInvocationID.x] = vec3(discretizePosition(input_origin[bid]))/1023.0;
-    }
+    // if(bounce== 1) {
+    //     output_debug_info[gl_GlobalInvocationID.x] = vec3(discretizePosition(input_origin[bid]))/1023.0;
+    // }
     const vec3 origin = input_origin[bid];
     const vec3 direction = input_direction[bid];
     const uint seed = murmur3_combine(invocation_seed, bid);
@@ -460,6 +462,12 @@ void main() {
         output_bsdf_pdf[bid] = 1.0;
         output_sort_key[bid] = 0;
         return;
+    }
+
+    if (bounce == 1) {
+        vec3 subgroupCentroid = subgroupAdd(origin) / float(gl_SubgroupSize);
+        float distance = length(subgroupCentroid - origin);
+        output_debug_info[bid] = vec3(distance)/10.0;
     }
 
     // get intersection info
