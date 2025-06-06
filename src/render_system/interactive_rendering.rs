@@ -9,8 +9,8 @@ use vulkano::{
     buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer},
     command_buffer::{
         AutoCommandBufferBuilder, CommandBuffer, CommandBufferBeginInfo, CommandBufferLevel,
-        CommandBufferUsage, CopyBufferInfo, CopyBufferToImageInfo, PrimaryAutoCommandBuffer,
-        PrimaryCommandBufferAbstract, RecordingCommandBuffer,
+        CommandBufferUsage, CopyBufferInfo, CopyBufferToImageInfo, CopyImageToBufferInfo,
+        PrimaryAutoCommandBuffer, PrimaryCommandBufferAbstract, RecordingCommandBuffer,
         allocator::StandardCommandBufferAllocator,
     },
     descriptor_set::{
@@ -185,11 +185,17 @@ fn create_swapchain(
     .unwrap()
 }
 
+enum WindowSizeSetupUsage {
+    Default,
+    TransferSrc,
+    Host,
+}
+
 /// This function is called once during initialization, then again whenever the window is resized.
 fn window_size_dependent_setup<T: BufferContents>(
     memory_allocator: Arc<StandardMemoryAllocator>,
     images: &[Arc<Image>],
-    transfer_src: bool,
+    usage: WindowSizeSetupUsage,
     scale: u32,
     channels: u32,
 ) -> Vec<Subbuffer<[T]>> {
@@ -203,18 +209,32 @@ fn window_size_dependent_setup<T: BufferContents>(
             Buffer::new_slice::<T>(
                 memory_allocator.clone(),
                 BufferCreateInfo {
-                    usage: if transfer_src {
-                        BufferUsage::STORAGE_BUFFER
-                            | BufferUsage::TRANSFER_SRC
-                            | BufferUsage::TRANSFER_DST
-                            | BufferUsage::SHADER_DEVICE_ADDRESS
-                    } else {
-                        BufferUsage::STORAGE_BUFFER | BufferUsage::SHADER_DEVICE_ADDRESS
+                    usage: match usage {
+                        WindowSizeSetupUsage::Default => {
+                            BufferUsage::STORAGE_BUFFER | BufferUsage::SHADER_DEVICE_ADDRESS
+                        }
+                        WindowSizeSetupUsage::TransferSrc => {
+                            BufferUsage::STORAGE_BUFFER
+                                | BufferUsage::TRANSFER_SRC
+                                | BufferUsage::TRANSFER_DST
+                                | BufferUsage::SHADER_DEVICE_ADDRESS
+                        }
+                        WindowSizeSetupUsage::Host => {
+                            BufferUsage::STORAGE_BUFFER
+                                | BufferUsage::TRANSFER_SRC
+                                | BufferUsage::TRANSFER_DST
+                        }
                     },
                     ..Default::default()
                 },
                 AllocationCreateInfo {
-                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
+                    memory_type_filter: match usage {
+                        WindowSizeSetupUsage::Default => MemoryTypeFilter::PREFER_DEVICE,
+                        WindowSizeSetupUsage::TransferSrc => MemoryTypeFilter::PREFER_DEVICE,
+                        WindowSizeSetupUsage::Host => {
+                            MemoryTypeFilter::PREFER_HOST | MemoryTypeFilter::HOST_RANDOM_ACCESS
+                        }
+                    },
                     ..Default::default()
                 },
                 (xsize * ysize * channels) as u64,
@@ -285,6 +305,7 @@ pub struct Renderer {
     sort_keys: Vec<Subbuffer<[u32]>>,
     debug_info: Vec<Subbuffer<[f32]>>,
     debug_info_2: Vec<Subbuffer<[f32]>>,
+    host_output_buffers: Vec<Subbuffer<[u8]>>,
     frame_swapchain_image_acquired_semaphore: Vec<Arc<sync::semaphore::Semaphore>>,
     frame_finished_rendering_semaphore: Vec<Arc<sync::semaphore::Semaphore>>,
     frame_finished_rendering_fence: Vec<Arc<sync::fence::Fence>>,
@@ -664,6 +685,7 @@ impl Renderer {
             debug_info: vec![],
             debug_info_2: vec![],
             sorter_storage: vec![],
+            host_output_buffers: vec![],
             rng: rand::rng(),
             old_frame_data: VecDeque::from([FrameData::default()]),
         };
@@ -708,7 +730,7 @@ impl Renderer {
         self.ray_origins = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
-            true,
+            WindowSizeSetupUsage::Default,
             self.scale,
             3 * (self.num_bounces + 1),
         );
@@ -717,7 +739,7 @@ impl Renderer {
         self.ray_directions = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
-            true,
+            WindowSizeSetupUsage::Default,
             self.scale,
             3 * (self.num_bounces + 1),
         );
@@ -726,7 +748,7 @@ impl Renderer {
         self.bounce_indices = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
-            true,
+            WindowSizeSetupUsage::Default,
             self.scale,
             1 * self.num_bounces,
         );
@@ -735,7 +757,7 @@ impl Renderer {
         self.bounce_normals = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
-            true,
+            WindowSizeSetupUsage::Default,
             self.scale,
             3 * self.num_bounces,
         );
@@ -744,7 +766,7 @@ impl Renderer {
         self.bounce_emissivity = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
-            true,
+            WindowSizeSetupUsage::Default,
             self.scale,
             3 * self.num_bounces,
         );
@@ -753,7 +775,7 @@ impl Renderer {
         self.bounce_reflectivity = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
-            true,
+            WindowSizeSetupUsage::Default,
             self.scale,
             3 * self.num_bounces,
         );
@@ -762,7 +784,7 @@ impl Renderer {
         self.bounce_nee_mis_weight = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
-            true,
+            WindowSizeSetupUsage::Default,
             self.scale,
             1 * self.num_bounces,
         );
@@ -771,7 +793,7 @@ impl Renderer {
         self.bounce_bsdf_pdf = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
-            true,
+            WindowSizeSetupUsage::Default,
             self.scale,
             1 * self.num_bounces,
         );
@@ -780,7 +802,7 @@ impl Renderer {
         self.bounce_nee_pdf = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
-            true,
+            WindowSizeSetupUsage::Default,
             self.scale,
             1 * self.num_bounces,
         );
@@ -789,7 +811,7 @@ impl Renderer {
         self.bounce_outgoing_radiance = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
-            true,
+            WindowSizeSetupUsage::Default,
             self.scale,
             3 * self.num_bounces,
         );
@@ -798,7 +820,7 @@ impl Renderer {
         self.bounce_omega_sampling_pdf = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
-            true,
+            WindowSizeSetupUsage::Default,
             self.scale,
             1 * self.num_bounces,
         );
@@ -807,7 +829,7 @@ impl Renderer {
         self.sort_keys = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
-            true,
+            WindowSizeSetupUsage::Default,
             self.scale,
             1,
         );
@@ -816,14 +838,14 @@ impl Renderer {
         self.debug_info = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
-            true,
+            WindowSizeSetupUsage::TransferSrc,
             self.scale,
             3,
         );
         self.debug_info_2 = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
-            true,
+            WindowSizeSetupUsage::TransferSrc,
             self.scale,
             3,
         );
@@ -854,6 +876,15 @@ impl Renderer {
                 .unwrap()
             })
             .collect::<Vec<_>>();
+
+        // host output buffers
+        self.host_output_buffers = window_size_dependent_setup(
+            self.memory_allocator.clone(),
+            &self.swapchain_images,
+            WindowSizeSetupUsage::Host,
+            self.scale,
+            3,
+        );
     }
 
     fn group_count_1d(&self, extent: &[u32; 2]) -> [u32; 3] {
@@ -872,7 +903,7 @@ impl Renderer {
         ]
     }
 
-    pub fn render(
+    pub unsafe fn render(
         &mut self,
         scene: &mut Scene<u32>,
         eye: Point3<f32>,
@@ -880,6 +911,7 @@ impl Renderer {
         right: Vector3<f32>,
         up: Vector3<f32>,
         rendering_preferences: RenderingPreferences,
+        screenshot_buffer_rgba: Option<Subbuffer<[u8]>>,
     ) {
         unsafe {
             // wait for the last fence to be signaled (signaled = not in flight)
@@ -1257,7 +1289,6 @@ impl Renderer {
                     .unwrap();
             }
 
-
             // wait for previous writes to finish
             builder
                 .pipeline_barrier(&DependencyInfo {
@@ -1524,6 +1555,20 @@ impl Renderer {
                 .unwrap()
                 .dispatch(self.group_count_2d(&[extent[0] / poolsize, &extent[1] / poolsize]))
                 .unwrap();
+
+            if let Some(screenshot_buffer_rgba) = screenshot_buffer_rgba {
+                // copy the swapchain image to the screenshot buffer
+                builder
+                    .copy_image_to_buffer(&{
+                        let mut x = CopyImageToBufferInfo::image_buffer(
+                            self.swapchain_images[image_index as usize].clone(),
+                            screenshot_buffer_rgba,
+                        );
+                        x.src_image_layout = ImageLayout::General;
+                        x
+                    })
+                    .unwrap();
+            }
 
             // transition image to present_src
             builder

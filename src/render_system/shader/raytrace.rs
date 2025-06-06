@@ -399,10 +399,31 @@ IntersectionInfo getIntersectionInfo(vec3 origin, vec3 direction) {
     }
 }
 
+
+// helper function to spread bits of a 16 bit integer for Morton encoding
+// Expands 16 bits (0-65535) to 32 bits by inserting 1 zeros between each bit.
+// Example: b15 b14 ... b1 b0 -> 0b15 0b14 ... 0b1 0b0
+uint spreadBits2(uint x) {
+    x &= 0x0000FFFFu;           // Mask to 16 bits
+    x = (x | (x << 8))  & 0x00FF00FFu; // ---- ---- fedc ba98  ---- ---- 7654 3210 →  ---- fedc ---- ba98 ---- 7654 ---- 3210
+    x = (x | (x << 4))  & 0x0F0F0F0Fu; // insert one zero between nibbles
+    x = (x | (x << 2))  & 0x33333333u; // insert one zero between pairs
+    x = (x | (x << 1))  & 0x55555555u; // final: insert one zero between every bit
+    return x;
+}
+
+// Interleaves two 16-bit integers that have been bit-spread by spreadBits2.
+// Given ij where ij.x = x and ij.y = y, produces a 32-bit Morton code: yx yx yx ...
+uint interleaveBits2(uvec2 ij) {
+    uint sx = spreadBits2(ij.x);
+    uint sy = spreadBits2(ij.y);
+    return (sy << 1) | sx;
+}
+
 // Helper function to spread bits of a 10-bit integer for Morton encoding
 // Expands 10 bits (0-1023) to 30 bits by inserting 2 zeros between bits.
 // Example: b9 b8 ... b1 b0 -> 00b9 00b8 ... 00b1 00b0
-uint spreadBits(uint x) {
+uint spreadBits3(uint x) {
     x &= 0x000003FF; // Mask to 10 bits
     x = (x | (x << 16)) & 0x030000FF;
     x = (x | (x <<  8)) & 0x0300F00F;
@@ -411,10 +432,10 @@ uint spreadBits(uint x) {
     return x;
 }
 
-uint interleaveBits(uvec3 ijk) {
-    uint sx = spreadBits(ijk.x); // ... 00x9 00x8 ... 00x0
-    uint sy = spreadBits(ijk.y); // ... 00y9 00y8 ... 00y0
-    uint sz = spreadBits(ijk.z); // ... 00z9 00z8 ... 00z0
+uint interleaveBits3(uvec3 ijk) {
+    uint sx = spreadBits3(ijk.x); // ... 00x9 00x8 ... 00x0
+    uint sy = spreadBits3(ijk.y); // ... 00y9 00y8 ... 00y0
+    uint sz = spreadBits3(ijk.z); // ... 00z9 00z8 ... 00z0
     return (ijk.x << 2) | (ijk.y << 1) | ijk.z;
 }
 
@@ -433,6 +454,14 @@ uvec3 discretizePosition(vec3 p) {
     const float max_10bit = 1023.0;
     uvec3 ijk = uvec3(mapped_p * max_10bit);
     return ijk;
+}
+
+// sid ϵ [0,1]  → rainbow RGB
+vec3 hsv2rgb(vec3 c)           // c = (hue, sat, val)
+{
+    vec3 p = abs(fract(c.x + vec3(0.0, 2.0/3.0, 1.0/3.0)) * 6.0 - 3.0);
+    p      = clamp(p - 1.0, 0.0, 1.0);   // saw-tooth -> triangle -> clamp
+    return c.z * mix(vec3(1.0), p, c.y); // value & saturation
 }
 
 void main() {
@@ -465,6 +494,15 @@ void main() {
     }
 
     if (bounce == 1) {
+        float sid = 0.0;
+        if(sort_type == 0) {
+            sid = float(gl_GlobalInvocationID.x)/float(1024*1024);
+        } else {
+            sid = float(interleaveBits2(uvec2(gl_GlobalInvocationID.x/1024, gl_GlobalInvocationID.x%1024)))/float(1<<20);
+        }
+        vec3 rainbow = hsv2rgb(vec3(sid, 1.0, 1.0));   // full-sat, full-value
+        output_debug_info[bid] = rainbow;              // or wherever needed
+
         vec3 subgroupCentroid = subgroupAdd(origin) / float(gl_SubgroupSize);
         float distance = length(subgroupCentroid - origin);
         output_debug_info[bid] = vec3(distance)/10.0;
@@ -630,11 +668,13 @@ void main() {
     output_reflectivity[bid] = reflectivity;
     output_nee_mis_weight[bid] = light_pdf_mis_weight;
     output_bsdf_pdf[bid] = bsdf_pdf;
-    
+
+
     if(sort_type == 0) {
         output_sort_key[bid] = bid;
     } else {
-        output_sort_key[bid] = interleaveBits(discretizePosition(new_origin));
+        output_sort_key[bid] = interleaveBits2(uvec2(gl_GlobalInvocationID.x/1024, gl_GlobalInvocationID.x%1024));
+        // output_sort_key[bid] = interleaveBits3(discretizePosition(new_origin));
     }
 }
 ",

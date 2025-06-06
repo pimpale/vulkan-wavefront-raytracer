@@ -801,7 +801,7 @@ impl ApplicationHandler for App {
                 .create_window(
                     Window::default_attributes()
                         .with_title("FLOATING")
-                        .with_inner_size(PhysicalSize::new(1000, 1000)),
+                        .with_inner_size(PhysicalSize::new(1024, 1024)),
                 )
                 .unwrap(),
         );
@@ -868,6 +868,7 @@ impl ApplicationHandler for App {
             WindowEvent::CloseRequested => {
                 // wait for queue to be idle
                 rcx.world.wait_idle();
+                std::process::exit(0);
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {

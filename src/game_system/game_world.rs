@@ -288,8 +288,10 @@ impl GameWorld {
         // render to screen
         {
             let mut mutscene = self.scene.borrow_mut();
+            unsafe {
             self.renderer
                 .render(&mut mutscene, eye, front, right, up, rendering_preferences);
+            }
         }
 
         // at this point we can now garbage collect removed entities from the last step (but not this step yet!)
