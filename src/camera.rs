@@ -42,6 +42,8 @@ pub struct RenderingPreferences {
     pub debug_view: u32,
     // 0 == no sort, 1 == sort
     pub sort_type: u32,
+    // 0 == no screenshot, 1 == screenshot
+    pub should_screenshot: bool,
 }
 
 impl Default for RenderingPreferences {
@@ -50,6 +52,7 @@ impl Default for RenderingPreferences {
             nee_type: 0,
             debug_view: 0,
             sort_type: 0,
+            should_screenshot: false,
         }
     }
 }

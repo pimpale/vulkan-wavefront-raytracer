@@ -19,6 +19,7 @@ use vulkano::memory::allocator::StandardMemoryAllocator;
 use vulkano::swapchain::Surface;
 
 use crate::camera::InteractiveCamera;
+use crate::camera::RenderingPreferences;
 use crate::game_system::block::BlockDefinitionTable;
 use crate::game_system::block::BlockIdx;
 use crate::game_system::chunk_manager::ChunkManager;
@@ -284,13 +285,30 @@ impl GameWorld {
             let camera = self.camera.borrow();
             (camera.eye_front_right_up(), camera.rendering_preferences())
         };
-
-        // render to screen
         {
             let mut mutscene = self.scene.borrow_mut();
             unsafe {
-            self.renderer
-                .render(&mut mutscene, eye, front, right, up, rendering_preferences);
+                self.renderer.render(
+                    &mut mutscene,
+                    eye,
+                    front,
+                    right,
+                    up,
+                    rendering_preferences.clone(),
+                );
+            }
+        }
+        if rendering_preferences.should_screenshot {
+            let screenshot = self.renderer.screenshot();
+            screenshot.save("screenshot.png").unwrap();
+            // reset the screenshot flag
+            {
+                self.camera
+                    .borrow_mut()
+                    .set_rendering_preferences(RenderingPreferences {
+                        should_screenshot: false,
+                        ..rendering_preferences
+                    });
             }
         }
 

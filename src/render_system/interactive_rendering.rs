@@ -172,7 +172,7 @@ fn create_swapchain(
             min_image_count: MIN_IMAGE_COUNT as u32,
             image_format: Format::B8G8R8A8_UNORM,
             image_extent: window.inner_size().into(),
-            image_usage: ImageUsage::STORAGE,
+            image_usage: ImageUsage::STORAGE | ImageUsage::TRANSFER_SRC,
             composite_alpha: surface_capabilities
                 .supported_composite_alpha
                 .into_iter()
@@ -883,7 +883,7 @@ impl Renderer {
             &self.swapchain_images,
             WindowSizeSetupUsage::Host,
             self.scale,
-            3,
+            4,
         );
     }
 
@@ -911,7 +911,6 @@ impl Renderer {
         right: Vector3<f32>,
         up: Vector3<f32>,
         rendering_preferences: RenderingPreferences,
-        screenshot_buffer_rgba: Option<Subbuffer<[u8]>>,
     ) {
         unsafe {
             // wait for the last fence to be signaled (signaled = not in flight)
@@ -1091,33 +1090,6 @@ impl Renderer {
 
                 // sort the rays (if we are not the first bounce)
                 if bounce > 0 {
-                    // NOTE: for now, we just copy
-                    // builder
-                    //     .copy_buffer(&CopyBufferInfo::buffers(
-                    //         self.bounce_indices[self.frame_count % MIN_IMAGE_COUNT]
-                    //             .clone()
-                    //             .slice(0..ray_count),
-                    //         self.bounce_indices[self.frame_count % MIN_IMAGE_COUNT]
-                    //             .clone()
-                    //             .slice(b * ray_count..(b + 1) * ray_count),
-                    //     ))
-                    //     .unwrap();
-
-                    // builder
-                    //     .pipeline_barrier(&DependencyInfo {
-                    //         memory_barriers: [MemoryBarrier {
-                    //             src_stages: PipelineStages::ALL_TRANSFER,
-                    //             src_access: AccessFlags::TRANSFER_WRITE,
-                    //             dst_stages: PipelineStages::COMPUTE_SHADER,
-                    //             dst_access: AccessFlags::SHADER_READ,
-                    //             ..Default::default()
-                    //         }]
-                    //         .as_ref()
-                    //         .into(),
-                    //         ..Default::default()
-                    //     })
-                    //     .unwrap();
-
                     self.sorter.sort_key_value(
                         &mut builder,
                         ray_count as u32,
@@ -1556,19 +1528,33 @@ impl Renderer {
                 .dispatch(self.group_count_2d(&[extent[0] / poolsize, &extent[1] / poolsize]))
                 .unwrap();
 
-            if let Some(screenshot_buffer_rgba) = screenshot_buffer_rgba {
-                // copy the swapchain image to the screenshot buffer
-                builder
-                    .copy_image_to_buffer(&{
-                        let mut x = CopyImageToBufferInfo::image_buffer(
-                            self.swapchain_images[image_index as usize].clone(),
-                            screenshot_buffer_rgba,
-                        );
-                        x.src_image_layout = ImageLayout::General;
-                        x
-                    })
-                    .unwrap();
-            }
+            // transition the output buffer to transfer src
+            builder
+                .pipeline_barrier(&DependencyInfo {
+                    memory_barriers: [MemoryBarrier {
+                        src_stages: PipelineStages::COMPUTE_SHADER,
+                        src_access: AccessFlags::SHADER_WRITE,
+                        dst_stages: PipelineStages::ALL_TRANSFER,
+                        dst_access: AccessFlags::TRANSFER_READ,
+                        ..Default::default()
+                    }]
+                    .as_ref()
+                    .into(),
+                    ..Default::default()
+                })
+                .unwrap();
+
+            // copy the swapchain image to the output buffer
+            builder
+                .copy_image_to_buffer(&{
+                    let mut x = CopyImageToBufferInfo::image_buffer(
+                        self.swapchain_images[image_index as usize].clone(),
+                        self.host_output_buffers[self.frame_count % MIN_IMAGE_COUNT].clone(),
+                    );
+                    x.src_image_layout = ImageLayout::General;
+                    x
+                })
+                .unwrap();
 
             // transition image to present_src
             builder
@@ -1591,6 +1577,13 @@ impl Renderer {
                         b
                     }]
                     .into(),
+                    memory_barriers: vec![MemoryBarrier {
+                        src_stages: PipelineStages::ALL_TRANSFER,
+                        src_access: AccessFlags::TRANSFER_WRITE,
+                        dst_stages: PipelineStages::BOTTOM_OF_PIPE,
+                        dst_access: AccessFlags::empty(),
+                        ..Default::default()
+                    }].into(),
                     ..Default::default()
                 })
                 .unwrap();
@@ -1665,5 +1658,47 @@ impl Renderer {
                 self.old_frame_data.pop_back();
             }
         }
+    }
+
+    pub fn screenshot(&self) -> RgbaImage {
+        // Determine which buffer holds the last rendered frame.
+        // `frame_count` has already been incremented after each call to `render`,
+        // therefore the last completed frame is `frame_count - 1`.
+        if self.host_output_buffers.is_empty() {
+            panic!("Renderer::screenshot called before buffers were created");
+        }
+
+        let num_images = MIN_IMAGE_COUNT;
+        let last_frame_index = self.frame_count.wrapping_sub(1) % num_images;
+
+        // Make sure the GPU is done writing to the buffer we are about to read.
+        // `wait` is a no-op if the fence is already signalled.
+        self.frame_finished_rendering_fence[last_frame_index]
+            .wait(None)
+            .unwrap();
+
+        // Image dimensions (account for the internal upscale factor `scale`).
+        let extent = self.swapchain_images[last_frame_index].extent();
+        let width = extent[0] * self.scale;
+        let height = extent[1] * self.scale;
+
+        // Map the buffer memory so we can read it on the CPU.
+        // The buffer contains f32 RGBA values in row-major order.
+        let mapped = self.host_output_buffers[last_frame_index]
+            .read()
+            .unwrap();
+
+        // Convert every f32 component into an 8-bit integer.
+        let mut pixels_u8 = Vec::with_capacity((width * height * 4) as usize);
+        for chunk in mapped.chunks_exact(4) {
+            pixels_u8.push(chunk[2]); // B
+            pixels_u8.push(chunk[1]); // G
+            pixels_u8.push(chunk[0]); // R
+            pixels_u8.push(chunk[3]); // A
+        }
+
+        // Build the image.
+        RgbaImage::from_vec(width, height, pixels_u8)
+            .expect("Failed to create image from raw buffer")
     }
 }

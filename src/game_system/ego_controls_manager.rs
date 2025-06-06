@@ -124,9 +124,14 @@ impl Manager for EgoControlsManager {
             dbg!(current_prefs.sort_type);
             camera.set_rendering_preferences(current_prefs);
         }
+        
+        if UserInputState::key_pressed(window_events, KeyCode::PrintScreen) {
+            let mut current_prefs = camera.rendering_preferences();
+            current_prefs.should_screenshot = true;
+            camera.set_rendering_preferences(current_prefs);
+        }
 
         let (cam_eye, cam_front, cam_right, cam_up) = camera.eye_front_right_up();
-
         let mut changes = vec![];
 
         // switch mode
