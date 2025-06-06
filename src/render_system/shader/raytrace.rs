@@ -445,9 +445,9 @@ uint interleaveBits3(uvec3 ijk) {
 // Each component is remapped to the integer range [0, 1023] (10 bits) before
 // interleaving the bits.
 uvec3 discretizePosition(vec3 p) {
-    // Map from approximately [-500, 500] → [0, 1]
-    const float min_coord = -500.0;
-    const float range     = 1000.0;     // max - min
+    // Map from approximately [-50, 50] → [0, 1]
+    const float min_coord = -50.0;
+    const float range     = 100.0;     // max - min
     vec3 mapped_p = clamp((p - vec3(min_coord)) / range, 0.0, 1.0);
 
     // Scale to [0, 1023] and convert to integers
@@ -498,14 +498,15 @@ void main() {
         if(sort_type == 0) {
             sid = float(gl_GlobalInvocationID.x)/float(1024*1024);
         } else {
-            sid = float(interleaveBits2(uvec2(gl_GlobalInvocationID.x/1024, gl_GlobalInvocationID.x%1024)))/float(1<<20);
+            // sid = float(interleaveBits2(uvec2(gl_GlobalInvocationID.x/1024, gl_GlobalInvocationID.x%1024)))/float(1<<20);
+            sid = mod(float(interleaveBits3(discretizePosition(origin)))/float(1<<8), 1.0);
         }
         vec3 rainbow = hsv2rgb(vec3(sid, 1.0, 1.0));   // full-sat, full-value
         output_debug_info[bid] = rainbow;              // or wherever needed
 
         vec3 subgroupCentroid = subgroupAdd(origin) / float(gl_SubgroupSize);
         float distance = length(subgroupCentroid - origin);
-        output_debug_info[bid] = vec3(distance)/10.0;
+        output_debug_info[bid] = vec3(distance)/100.0;
     }
 
     // get intersection info
@@ -673,8 +674,8 @@ void main() {
     if(sort_type == 0) {
         output_sort_key[bid] = bid;
     } else {
-        output_sort_key[bid] = interleaveBits2(uvec2(gl_GlobalInvocationID.x/1024, gl_GlobalInvocationID.x%1024));
-        // output_sort_key[bid] = interleaveBits3(discretizePosition(new_origin));
+        // output_sort_key[bid] = interleaveBits2(uvec2(gl_GlobalInvocationID.x/1024, gl_GlobalInvocationID.x%1024));
+        output_sort_key[bid] = interleaveBits3(discretizePosition(new_origin));
     }
 }
 ",
