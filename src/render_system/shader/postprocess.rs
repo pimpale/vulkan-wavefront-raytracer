@@ -60,10 +60,6 @@ void main() {
         pixel_color = outgoing_radiance;
     } else {
         pixel_color = debug_info;
-        // infinite loop to test crash layer
-        while (true) {
-            pixel_color += pixel_color;
-        }
     }
 
     // average the samples

@@ -399,25 +399,25 @@ IntersectionInfo getIntersectionInfo(vec3 origin, vec3 direction) {
     }
 }
 
-
-// helper function to spread bits of a 16 bit integer for Morton encoding
-// Expands 16 bits (0-65535) to 32 bits by inserting 1 zeros between each bit.
-// Example: b15 b14 ... b1 b0 -> 0b15 0b14 ... 0b1 0b0
-uint spreadBits2(uint x) {
-    x &= 0x0000FFFFu;           // Mask to 16 bits
-    x = (x | (x << 8))  & 0x00FF00FFu; // ---- ---- fedc ba98  ---- ---- 7654 3210 →  ---- fedc ---- ba98 ---- 7654 ---- 3210
-    x = (x | (x << 4))  & 0x0F0F0F0Fu; // insert one zero between nibbles
-    x = (x | (x << 2))  & 0x33333333u; // insert one zero between pairs
-    x = (x | (x << 1))  & 0x55555555u; // final: insert one zero between every bit
-    return x;
-}
+int MASKS[] = int[] (0x55555555, 0x33333333, 0x0F0F0F0F, 0x00FF00FF, 0x0000FFFF);
 
 // Interleaves two 16-bit integers that have been bit-spread by spreadBits2.
-// Given ij where ij.x = x and ij.y = y, produces a 32-bit Morton code: yx yx yx ...
+// Given ij where ij.x = x and ij.y = y, produces a 32-bit Morton code: xy xy xy ...
 uint interleaveBits2(uvec2 ij) {
-    uint sx = spreadBits2(ij.x);
-    uint sy = spreadBits2(ij.y);
-    return (sy << 1) | sx;
+    int n=8;
+    for (int i=3; i>=0; i--)
+        ij =  (ij | (ij << n)) & MASKS[i],
+        n /= 2;
+    return uint(ij.x | (ij.y << 1));
+}
+
+uvec2 unInterleaveBits2(uint z) {
+    int n=1;
+    uvec2 I = uvec2(z,z>>1) & MASKS[0];
+    for (int i=1; i<=4; i++)
+        I = (I | (I >>  n)) & MASKS[i],
+        n *= 2;
+    return I;
 }
 
 // Helper function to spread bits of a 10-bit integer for Morton encoding
@@ -495,18 +495,31 @@ void main() {
 
     if (bounce == 1) {
         float sid = 0.0;
+        uint xval = gl_GlobalInvocationID.x >> 10;
+        uint yval = gl_GlobalInvocationID.x & 1023;
         if(sort_type == 0) {
             sid = float(gl_GlobalInvocationID.x)/float(1024*1024);
         } else {
-            // sid = float(interleaveBits2(uvec2(gl_GlobalInvocationID.x/1024, gl_GlobalInvocationID.x%1024)))/float(1<<20);
-            sid = mod(float(interleaveBits3(discretizePosition(origin)))/float(1<<8), 1.0);
+            sid = float(interleaveBits2(uvec2(gl_GlobalInvocationID.x >> 10, gl_GlobalInvocationID.x & 1023)))/float(1024*1024*10);
+            // sid = mod(float(interleaveBits3(discretizePosition(origin)))/float(1<<8), 1.0);
+
+            // // Test interleaveBits2 function - outputs white (1.0) if all tests pass
+            // bool test1 = interleaveBits2(uvec2(0, 0)) == 0u;                           // both zero -> 0
+            // bool test2 = interleaveBits2(uvec2(0xFFFF, 0xFFFF)) == 0xFFFFFFFFu;       // both max -> all bits set
+            // bool test3 = interleaveBits2(uvec2(1, 0)) == 2u;                          // (1,0) -> 0b10 = 2
+            // bool test4 = interleaveBits2(uvec2(0, 1)) == 1u;                          // (0,1) -> 0b01 = 1
+            // bool test5 = interleaveBits2(uvec2(1, 1)) == 3u;                          // (1,1) -> 0b11 = 3
+            
+            // sid = (test1 && test2 && test3 && test4 && test5) ? 1.0 : 0.0;
         }
-        vec3 rainbow = hsv2rgb(vec3(sid, 1.0, 1.0));   // full-sat, full-value
+        // vec3 rainbow = hsv2rgb(vec3(sid, 1.0, 1.0));   // full-sat, full-value
+        vec3 rainbow = vec3(vec2(unInterleaveBits2(gl_GlobalInvocationID.x))/1023.0, 0.0);
+        // vec3 rainbow = vec3(xval, yval, 0.0)/1023.0;
         output_debug_info[bid] = rainbow;              // or wherever needed
 
-        vec3 subgroupCentroid = subgroupAdd(origin) / float(gl_SubgroupSize);
-        float distance = length(subgroupCentroid - origin);
-        output_debug_info[bid] = vec3(distance)/100.0;
+        // vec3 subgroupCentroid = subgroupAdd(origin) / float(gl_SubgroupSize);
+        // float distance = length(subgroupCentroid - origin);
+        // output_debug_info[bid] = vec3(distance)/100.0;
     }
 
     // get intersection info
@@ -674,8 +687,9 @@ void main() {
     if(sort_type == 0) {
         output_sort_key[bid] = bid;
     } else {
+        output_sort_key[bid] = bid;
         // output_sort_key[bid] = interleaveBits2(uvec2(gl_GlobalInvocationID.x/1024, gl_GlobalInvocationID.x%1024));
-        output_sort_key[bid] = interleaveBits3(discretizePosition(new_origin));
+        // output_sort_key[bid] = interleaveBits3(discretizePosition(new_origin));
     }
 }
 ",

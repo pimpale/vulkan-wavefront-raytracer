@@ -918,7 +918,7 @@ impl Renderer {
     ) {
         unsafe {
             // wait for the last fence to be signaled (signaled = not in flight)
-            self.frame_finished_rendering_fence[self.frame_count % MIN_IMAGE_COUNT]
+            self.frame_finished_rendering_fence[self.frame_count.wrapping_sub(1) % MIN_IMAGE_COUNT]
                 .wait(None)
                 .unwrap();
 
@@ -1547,17 +1547,17 @@ impl Renderer {
                 })
                 .unwrap();
 
-            // // copy the swapchain image to the output buffer (for screenshot)
-            // builder
-            //     .copy_image_to_buffer(&{
-            //         let mut x = CopyImageToBufferInfo::image_buffer(
-            //             self.swapchain_images[image_index as usize].clone(),
-            //             self.host_output_buffers[self.frame_count % MIN_IMAGE_COUNT].clone(),
-            //         );
-            //         x.src_image_layout = ImageLayout::General;
-            //         x
-            //     })
-            //     .unwrap();
+            // copy the swapchain image to the output buffer (for screenshot)
+            builder
+                .copy_image_to_buffer(&{
+                    let mut x = CopyImageToBufferInfo::image_buffer(
+                        self.swapchain_images[image_index as usize].clone(),
+                        self.host_output_buffers[self.frame_count % MIN_IMAGE_COUNT].clone(),
+                    );
+                    x.src_image_layout = ImageLayout::General;
+                    x
+                })
+                .unwrap();
 
             // transition image to present_src
             builder
@@ -1605,6 +1605,7 @@ impl Renderer {
                     .reset()
                     .unwrap();
 
+
                 submit_fn(
                     self.queue.handle(),
                     1,
@@ -1643,8 +1644,6 @@ impl Renderer {
                         .image_indices(&[image_index]) as *const _,
                 )
                 .result();
-
-                dbg!("present result", present_result);
 
                 // handle present result
                 match present_result {
