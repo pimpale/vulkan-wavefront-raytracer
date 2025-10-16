@@ -1,6 +1,6 @@
-use std::{collections::VecDeque, sync::Arc};
+use std::{collections::VecDeque, sync::Arc, time::Duration};
 
-use ash::vk::{Fence, PresentInfoKHR, SubmitInfo};
+use ash::vk::{Fence, PipelineStageFlags, PresentInfoKHR, SubmitInfo};
 use image::RgbaImage;
 use nalgebra::{Point3, Vector3};
 use rand::RngCore;
@@ -68,6 +68,9 @@ pub fn get_device_for_rendering_on(
         khr_ray_query: true,
         khr_swapchain: true,
         khr_push_descriptor: true,
+        // needed for the crash layer to work
+        ext_device_fault: true,
+        ext_device_address_binding_report: true,
         ..DeviceExtensions::empty()
     };
     let features = DeviceFeatures {
@@ -82,6 +85,7 @@ pub fn get_device_for_rendering_on(
         uniform_and_storage_buffer8_bit_access: true,
         runtime_descriptor_array: true,
         descriptor_binding_variable_descriptor_count: true,
+        scalar_block_layout: true,
         ..DeviceFeatures::empty()
     };
     let (physical_device, general_queue_family_index, transfer_queue_family_index) = instance
@@ -1448,8 +1452,7 @@ impl Renderer {
                 .dispatch(self.group_count_2d(&rt_extent))
                 .unwrap();
 
-            // aggregate the samples and write to swapchain image
-
+            // aggregate the samples and write to output buffer
             builder
                 .pipeline_barrier(&DependencyInfo {
                     memory_barriers: [MemoryBarrier {
@@ -1469,7 +1472,7 @@ impl Renderer {
                         b.src_access = AccessFlags::empty();
                         b.dst_stages = PipelineStages::COMPUTE_SHADER;
                         b.dst_access = AccessFlags::SHADER_WRITE;
-                        b.old_layout = ImageLayout::PresentSrc;
+                        b.old_layout = ImageLayout::Undefined;
                         b.new_layout = ImageLayout::General;
                         b.subresource_range = ImageSubresourceRange {
                             aspects: ImageAspects::COLOR,
@@ -1544,17 +1547,17 @@ impl Renderer {
                 })
                 .unwrap();
 
-            // copy the swapchain image to the output buffer
-            builder
-                .copy_image_to_buffer(&{
-                    let mut x = CopyImageToBufferInfo::image_buffer(
-                        self.swapchain_images[image_index as usize].clone(),
-                        self.host_output_buffers[self.frame_count % MIN_IMAGE_COUNT].clone(),
-                    );
-                    x.src_image_layout = ImageLayout::General;
-                    x
-                })
-                .unwrap();
+            // // copy the swapchain image to the output buffer (for screenshot)
+            // builder
+            //     .copy_image_to_buffer(&{
+            //         let mut x = CopyImageToBufferInfo::image_buffer(
+            //             self.swapchain_images[image_index as usize].clone(),
+            //             self.host_output_buffers[self.frame_count % MIN_IMAGE_COUNT].clone(),
+            //         );
+            //         x.src_image_layout = ImageLayout::General;
+            //         x
+            //     })
+            //     .unwrap();
 
             // transition image to present_src
             builder
@@ -1583,7 +1586,8 @@ impl Renderer {
                         dst_stages: PipelineStages::BOTTOM_OF_PIPE,
                         dst_access: AccessFlags::empty(),
                         ..Default::default()
-                    }].into(),
+                    }]
+                    .into(),
                     ..Default::default()
                 })
                 .unwrap();
@@ -1596,6 +1600,11 @@ impl Renderer {
 
                 let command_buffer_handle = command_buffer.handle();
 
+                // set fence to unsignaled before submitting
+                self.frame_finished_rendering_fence[self.frame_count % MIN_IMAGE_COUNT]
+                    .reset()
+                    .unwrap();
+
                 submit_fn(
                     self.queue.handle(),
                     1,
@@ -1605,12 +1614,15 @@ impl Renderer {
                         .wait_semaphores(&[self.frame_swapchain_image_acquired_semaphore
                             [self.frame_count % MIN_IMAGE_COUNT]
                             .handle()])
+                        // we wait for the swapchain image to be acquired before running the transfer command that will write to it.
+                        // this makes it wait earlier than we want it to, but we don't have a more specific stage to wait for.
+                        .wait_dst_stage_mask(&[PipelineStageFlags::TRANSFER])
                         .command_buffers(&[command_buffer_handle])
-                        // we wait for
+                        // we signal the semaphore when the command buffer is finished executing
+                        // we can present the image as soon as that is done.
                         .signal_semaphores(&[self.frame_finished_rendering_semaphore
                             [self.frame_count % MIN_IMAGE_COUNT]
                             .handle()]) as *const _,
-                    // submitting causes the fence to go to an unsignaled state
                     // once it is finished processing, the fence will be signaled again
                     // the reason we need both a fence and the semaphore is because the swapchain present function only accepts a semaphore
                     // we need to be able to check the state of the fence on the next frame though, so we need to use both
@@ -1631,6 +1643,8 @@ impl Renderer {
                         .image_indices(&[image_index]) as *const _,
                 )
                 .result();
+
+                dbg!("present result", present_result);
 
                 // handle present result
                 match present_result {
@@ -1684,9 +1698,7 @@ impl Renderer {
 
         // Map the buffer memory so we can read it on the CPU.
         // The buffer contains f32 RGBA values in row-major order.
-        let mapped = self.host_output_buffers[last_frame_index]
-            .read()
-            .unwrap();
+        let mapped = self.host_output_buffers[last_frame_index].read().unwrap();
 
         // Convert every f32 component into an 8-bit integer.
         let mut pixels_u8 = Vec::with_capacity((width * height * 4) as usize);

@@ -7,11 +7,12 @@ use rapier3d::dynamics::RigidBodyType;
 
 use vulkano::VulkanObject;
 use vulkano::command_buffer::{CommandBufferBeginInfo, CommandBufferLevel, RecordingCommandBuffer};
+use vulkano::instance::InstanceExtensions;
 use vulkano::instance::debug::{
-    DebugUtilsMessenger, DebugUtilsMessengerCallback, DebugUtilsMessengerCreateInfo,
+    DebugUtilsMessageSeverity, DebugUtilsMessageType, DebugUtilsMessengerCallbackData,
 };
+use vulkano::sync::GpuFuture;
 use vulkano::sync::fence::FenceCreateInfo;
-use vulkano::sync::{self, GpuFuture};
 use vulkano::{
     VulkanLibrary,
     command_buffer::allocator::StandardCommandBufferAllocator,
@@ -178,7 +179,6 @@ fn main() -> Result<(), impl Error> {
 struct App {
     instance: Arc<Instance>,
     rcx: Option<RenderContext>,
-    _callback: Option<DebugUtilsMessenger>,
 }
 
 struct RenderContext {
@@ -199,7 +199,11 @@ impl App {
         // All the window-drawing functionalities are part of non-core extensions that we need to
         // enable manually. To do so, we ask `Surface` for the list of extensions required to draw
         // to a window.
-        let required_extensions = Surface::required_extensions(event_loop).unwrap();
+        let required_extensions = InstanceExtensions {
+            ext_debug_utils: true,
+            ..Default::default()
+        }
+        .union(&Surface::required_extensions(event_loop).unwrap());
 
         // Now creating the instance.
         let instance = Instance::new(
@@ -209,24 +213,17 @@ impl App {
                 // (e.g. MoltenVK)
                 flags: InstanceCreateFlags::ENUMERATE_PORTABILITY,
                 enabled_extensions: required_extensions,
+                enabled_layers: vec![
+                    "VK_LAYER_KHRONOS_validation".to_string(),
+                    // "VK_LAYER_LUNARG_crash_diagnostic".to_string(),
+                ],
                 ..Default::default()
             },
         )
         .unwrap();
 
-        let _callback = DebugUtilsMessenger::new(
-            instance.clone(),
-            DebugUtilsMessengerCreateInfo::user_callback(unsafe {
-                DebugUtilsMessengerCallback::new(|message_severity, message_type, callback_data| {
-                    dbg!("Debug callback: {:?}", callback_data.message);
-                })
-            }),
-        )
-        .ok();
-
         App {
             instance,
-            _callback,
             rcx: None,
         }
     }
