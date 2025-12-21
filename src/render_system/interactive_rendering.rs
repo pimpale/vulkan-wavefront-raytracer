@@ -651,7 +651,7 @@ impl Renderer {
 
         let mut renderer = Renderer {
             scale: 1,
-            num_bounces: 6,
+            num_bounces: 4,
             surface,
             command_buffer_allocator,
             device,

@@ -14,13 +14,12 @@ use rapier3d::dynamics::RigidBodyBuilder;
 use rapier3d::dynamics::RigidBodyHandle;
 use rapier3d::dynamics::RigidBodySet;
 use rapier3d::dynamics::RigidBodyType;
-use rapier3d::geometry::DefaultBroadPhase;
 use rapier3d::geometry::ColliderSet;
+use rapier3d::geometry::DefaultBroadPhase;
 use rapier3d::geometry::NarrowPhase;
 use rapier3d::parry::query::ShapeCastOptions;
 use rapier3d::pipeline::PhysicsPipeline;
 use rapier3d::pipeline::QueryFilter;
-use rapier3d::pipeline::QueryPipeline;
 
 use crate::game_system::game_world::EntityCreationData;
 use crate::game_system::game_world::EntityPhysicsData;
@@ -47,7 +46,6 @@ struct InnerPhysicsManager {
     impulse_joint_set: ImpulseJointSet,
     multibody_joint_set: MultibodyJointSet,
     ccd_solver: CCDSolver,
-    query_pipeline: QueryPipeline,
 
     // entity data
     entities: HashMap<u32, PhysicsManagerEntityData>,
@@ -65,7 +63,6 @@ impl InnerPhysicsManager {
             impulse_joint_set: ImpulseJointSet::new(),
             multibody_joint_set: MultibodyJointSet::new(),
             ccd_solver: CCDSolver::new(),
-            query_pipeline: QueryPipeline::new(),
 
             entities: HashMap::new(),
         }
@@ -167,20 +164,26 @@ impl InnerPhysicsManager {
         let rigidbody = self.rigid_body_set.get(*rigid_body_handle).unwrap();
         let collider_handle = rigidbody.colliders()[0];
         let collider = self.collider_set.get(collider_handle).unwrap();
-        if let Some((_, hit)) = self.query_pipeline.cast_shape(
-            &self.rigid_body_set,
-            &self.collider_set,
-            rigidbody.position(),
-            &Vector3::new(0.0, -1.0, 0.0),
-            collider.shape(),
-            ShapeCastOptions {
-                max_time_of_impact: max_distance,
-                target_distance: 0.0,
-                stop_at_penetration: true,
-                compute_impact_geometry_on_penetration: false,
-            },
-            QueryFilter::only_fixed(),
-        ) {
+        if let Some((_, hit)) = self
+            .broad_phase
+            .as_query_pipeline(
+                self.narrow_phase.query_dispatcher(),
+                &self.rigid_body_set,
+                &self.collider_set,
+                QueryFilter::only_fixed(),
+            )
+            .cast_shape(
+                rigidbody.position(),
+                &Vector3::new(0.0, -1.0, 0.0),
+                collider.shape(),
+                ShapeCastOptions {
+                    max_time_of_impact: max_distance,
+                    target_distance: 0.0,
+                    stop_at_penetration: true,
+                    compute_impact_geometry_on_penetration: false,
+                },
+            )
+        {
             (hit.time_of_impact, true)
         } else {
             (max_distance, false)
@@ -264,7 +267,6 @@ impl InnerPhysicsManager {
             &mut self.impulse_joint_set,
             &mut self.multibody_joint_set,
             &mut self.ccd_solver,
-            Some(&mut self.query_pipeline),
             &(),
             &(),
         );
