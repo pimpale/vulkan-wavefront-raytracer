@@ -5,6 +5,7 @@ use noise::{NoiseFn, OpenSimplex};
 use rapier3d::{
     dynamics::MassProperties,
     geometry::{Collider, ColliderBuilder, SharedShape},
+    math::Pose3,
 };
 
 use super::block::{BlockDefinitionTable, BlockFace, BlockIdx};
@@ -78,10 +79,8 @@ pub fn generate_chunk(data: &WorldgenData, chunk_position: Point3<i32>) -> Vec<B
                 let wz = z as f64 + chunk_offset[2] as f64;
                 let val_here = noise.get([wx / scale1, wy / scale1, wz / scale1]) - wy / 50000.0;
                 let awy = wy + 1.0;
-                let val_above = data
-                    .noise
-                    .get([wx / scale1, awy / scale1, wz / scale1])
-                    - awy / 50000.0;
+                let val_above =
+                    data.noise.get([wx / scale1, awy / scale1, wz / scale1]) - awy / 50000.0;
 
                 let thresh = 0.2;
                 if val_here > thresh {
@@ -100,7 +99,7 @@ pub fn generate_chunk(data: &WorldgenData, chunk_position: Point3<i32>) -> Vec<B
                 // }
                 // add world central lamp
                 if wx > -3.0 && wx < 3.0 && wy > -3.0 && wy < 3.0 && wz > -3.0 && wz < 3.0 {
-                        blocks[xyzidx] = lamp;
+                    blocks[xyzidx] = lamp;
                 }
             }
         }
@@ -118,7 +117,7 @@ pub fn gen_hitbox(blocks: &BlockDefinitionTable, chunk_data: &Vec<BlockIdx>) -> 
                 if blocks.solid(chunk_data[chunk_idx(x, y, z)]) {
                     let collider = SharedShape::cuboid(0.5, 0.5, 0.5);
                     let position =
-                        Isometry3::translation(x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5);
+                        Pose3::translation(x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5);
                     sub_colliders.push((position, collider));
                 }
             }
@@ -133,11 +132,12 @@ pub fn gen_hitbox(blocks: &BlockDefinitionTable, chunk_data: &Vec<BlockIdx>) -> 
                 // so we can just set the mass properties to infinity
                 .mass_properties(MassProperties::from_cuboid(
                     f32::INFINITY,
-                    Vector3::from([
+                    [
                         CHUNK_X_SIZE as f32 * 0.5,
                         CHUNK_Y_SIZE as f32 * 0.5,
                         CHUNK_Z_SIZE as f32 * 0.5,
-                    ]),
+                    ]
+                    .into(),
                 ))
                 .build();
 

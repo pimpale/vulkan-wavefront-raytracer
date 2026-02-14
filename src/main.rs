@@ -35,7 +35,7 @@ mod handle_user_input;
 mod render_system;
 mod utils;
 
-use rand::RngCore;
+use rand::prelude::*;
 
 fn build_scene(
     general_queue: Arc<vulkano::device::Queue>,
@@ -230,7 +230,7 @@ impl App {
 }
 
 fn test_radix_sort(device: Arc<vulkano::device::Device>, queue: Arc<vulkano::device::Queue>) {
-    use rand::RngCore;
+    use rand::prelude::*;
     use render_system::radix_sort::Sorter;
     use vulkano::{
         buffer::{Buffer, BufferCreateInfo, BufferUsage},

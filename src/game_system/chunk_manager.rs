@@ -3,8 +3,8 @@ use std::{
     collections::HashMap,
     rc::Rc,
     sync::{
-        mpsc::{Receiver, Sender},
         Arc,
+        mpsc::{Receiver, Sender},
     },
     time::Instant,
 };
@@ -17,12 +17,15 @@ use vulkano::memory::allocator::MemoryAllocator;
 
 use crate::{
     game_system::game_world::{EntityCreationData, EntityPhysicsData, WorldChange},
-    render_system::{scene::{self, SceneUploadedObjectHandle, SceneUploader}, vertex::Vertex3D},
+    render_system::{
+        scene::{self, SceneUploadedObjectHandle, SceneUploader},
+        vertex::Vertex3D,
+    },
 };
 
 use super::{
     block::{self, BlockDefinitionTable, BlockFace, BlockIdx},
-    chunk::{self, NeighboringChunkData, WorldgenData, CHUNK_X_SIZE, CHUNK_Y_SIZE, CHUNK_Z_SIZE},
+    chunk::{self, CHUNK_X_SIZE, CHUNK_Y_SIZE, CHUNK_Z_SIZE, NeighboringChunkData, WorldgenData},
     manager::{Manager, UpdateData},
 };
 
@@ -52,7 +55,12 @@ struct Chunk {
 
 enum ChunkWorkerEvent {
     ChunkGenerated(Point3<i32>, Vec<BlockIdx>),
-    ChunkMeshed(Point3<i32>, Instant, SceneUploadedObjectHandle, Option<Collider>),
+    ChunkMeshed(
+        Point3<i32>,
+        Instant,
+        SceneUploadedObjectHandle,
+        Option<Collider>,
+    ),
 }
 
 struct InnerChunkManager {
@@ -240,7 +248,7 @@ impl InnerChunkManager {
                     let mesh = uploader.upload_object(vertexes);
 
                     let hitbox = chunk::gen_hitbox(&block_table, &data);
-                
+
                     let _ = event_sender.send(ChunkWorkerEvent::ChunkMeshed(
                         chunk_position,
                         data_set_time,
@@ -321,8 +329,7 @@ impl InnerChunkManager {
         let (chunk_coords, block_coords) = chunk::global_to_chunk_coords(global_coords);
         match self.chunks.get(&chunk_coords) {
             Some(Chunk {
-                data: Some(data),
-                ..
+                data: Some(data), ..
             }) => Some(data[chunk::chunk_idx2(block_coords)]),
             _ => None,
         }

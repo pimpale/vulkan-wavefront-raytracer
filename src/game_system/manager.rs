@@ -1,4 +1,4 @@
-use std::collections::{HashMap, BTreeMap};
+use std::collections::{BTreeMap, HashMap};
 
 use crate::game_system::game_world::{Entity, WorldChange};
 
@@ -9,12 +9,8 @@ pub struct UpdateData<'a> {
     pub ego_entity_id: u32,
     pub reserve_entity_id: &'a mut dyn FnMut() -> u32,
     pub extent: [u32; 2],
-
 }
 
 pub trait Manager {
-    fn update<'a>(
-        &mut self,
-        data: UpdateData<'a>,
-    ) -> Vec<WorldChange>;
+    fn update<'a>(&mut self, data: UpdateData<'a>) -> Vec<WorldChange>;
 }

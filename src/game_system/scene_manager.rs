@@ -1,9 +1,6 @@
 use std::{cell::RefCell, rc::Rc};
 
-use crate::{
-    game_system::game_world::WorldChange,
-    render_system::scene::Scene,
-};
+use crate::{game_system::game_world::WorldChange, render_system::scene::Scene};
 
 use super::manager::{Manager, UpdateData};
 

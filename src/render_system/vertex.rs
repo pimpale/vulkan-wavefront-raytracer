@@ -21,11 +21,7 @@ impl Vertex3D {
     }
 
     pub fn new2(position: [f32; 3], t: u32, uv: [f32; 2]) -> Vertex3D {
-        Vertex3D {
-            position,
-            t,
-            uv,
-        }
+        Vertex3D { position, t, uv }
     }
 }
 
@@ -46,7 +42,6 @@ impl LightVertex3D {
         }
     }
 }
-
 
 #[derive(Clone, Copy, Debug, BufferContents)]
 #[repr(C)]

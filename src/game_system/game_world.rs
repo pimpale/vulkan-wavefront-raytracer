@@ -1,9 +1,9 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
-use std::sync::Arc;
 use std::fs;
 use std::path::Path;
+use std::rc::Rc;
+use std::sync::Arc;
 
 use nalgebra::Isometry3;
 use nalgebra::Point3;
@@ -312,7 +312,12 @@ impl GameWorld {
             if let Ok(entries) = fs::read_dir(&screenshots_dir) {
                 for entry in entries.flatten() {
                     let path = entry.path();
-                    if path.extension().and_then(|s| s.to_str()).map(|s| s.eq_ignore_ascii_case("png")).unwrap_or(false) {
+                    if path
+                        .extension()
+                        .and_then(|s| s.to_str())
+                        .map(|s| s.eq_ignore_ascii_case("png"))
+                        .unwrap_or(false)
+                    {
                         if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
                             // Accept either purely numeric names like "123" or prefixed names like "screenshot123"
                             let numeric_part = stem.trim_start_matches("screenshot");
@@ -325,7 +330,9 @@ impl GameWorld {
             }
 
             let file_path = screenshots_dir.join(format!("{}.png", next_idx));
-            screenshot.save(&file_path).expect("Failed to save screenshot");
+            screenshot
+                .save(&file_path)
+                .expect("Failed to save screenshot");
 
             // reset the screenshot flag
             {

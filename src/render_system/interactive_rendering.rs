@@ -3,7 +3,7 @@ use std::{collections::VecDeque, sync::Arc, time::Duration};
 use ash::vk::{Fence, PipelineStageFlags, PresentInfoKHR, SubmitInfo};
 use image::RgbaImage;
 use nalgebra::{Point3, Vector3};
-use rand::RngCore;
+use rand::prelude::*;
 use vulkano::{
     Validated, VulkanError, VulkanObject,
     buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer},
@@ -1604,7 +1604,6 @@ impl Renderer {
                 self.frame_finished_rendering_fence[self.frame_count % MIN_IMAGE_COUNT]
                     .reset()
                     .unwrap();
-
 
                 submit_fn(
                     self.queue.handle(),
