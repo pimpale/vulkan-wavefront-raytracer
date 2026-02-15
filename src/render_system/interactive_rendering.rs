@@ -281,7 +281,6 @@ pub struct Renderer {
     device: Arc<Device>,
     queue: Arc<Queue>,
     memory_allocator: Arc<StandardMemoryAllocator>,
-    descriptor_set_allocator: Arc<StandardDescriptorSetAllocator>,
     command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
     swapchain: Arc<Swapchain>,
     material_descriptor_set: Arc<DescriptorSet>,
@@ -650,7 +649,7 @@ impl Renderer {
         let sorter = Sorter::new(device.clone());
 
         let mut renderer = Renderer {
-            scale: 2,
+            scale: 1,
             num_bounces: 4,
             surface,
             command_buffer_allocator,
@@ -662,7 +661,6 @@ impl Renderer {
             nee_pdf_pipeline,
             outgoing_radiance_pipeline,
             postprocess_pipeline,
-            descriptor_set_allocator,
             swapchain_images,
             swapchain_image_views,
             frame_swapchain_image_acquired_semaphore,
