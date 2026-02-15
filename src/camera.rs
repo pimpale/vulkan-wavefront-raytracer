@@ -36,6 +36,7 @@ impl DirVecs {
 
 #[derive(Clone, Debug)]
 pub struct RenderingPreferences {
+    pub spp: u32,
     // 0 == none, 1 == nee
     pub nee_type: u32,
     // 0 == no debug view, 1 == debug view
@@ -49,6 +50,7 @@ pub struct RenderingPreferences {
 impl Default for RenderingPreferences {
     fn default() -> RenderingPreferences {
         RenderingPreferences {
+            spp: 4,
             nee_type: 0,
             debug_view: 0,
             sort_type: 0,

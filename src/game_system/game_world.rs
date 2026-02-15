@@ -1,7 +1,5 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::fs;
-use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -301,48 +299,21 @@ impl GameWorld {
             }
         }
         if rendering_preferences.should_screenshot {
-            let screenshot = self.renderer.screenshot();
-
-            // Ensure the screenshots directory exists
-            let screenshots_dir = Path::new("screenshots");
-            fs::create_dir_all(&screenshots_dir).expect("Failed to create screenshots directory");
-
-            // Determine the next file index
-            let mut next_idx: u32 = 0;
-            if let Ok(entries) = fs::read_dir(&screenshots_dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path
-                        .extension()
-                        .and_then(|s| s.to_str())
-                        .map(|s| s.eq_ignore_ascii_case("png"))
-                        .unwrap_or(false)
-                    {
-                        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                            // Accept either purely numeric names like "123" or prefixed names like "screenshot123"
-                            let numeric_part = stem.trim_start_matches("screenshot");
-                            if let Ok(n) = numeric_part.parse::<u32>() {
-                                next_idx = next_idx.max(n + 1);
-                            }
-                        }
-                    }
+            {
+                let mut mutscene = self.scene.borrow_mut();
+                unsafe {
+                    self.renderer
+                        .benchmark(&mut mutscene, eye, front, right, up);
                 }
             }
 
-            let file_path = screenshots_dir.join(format!("{}.png", next_idx));
-            screenshot
-                .save(&file_path)
-                .expect("Failed to save screenshot");
-
             // reset the screenshot flag
-            {
-                self.camera
-                    .borrow_mut()
-                    .set_rendering_preferences(RenderingPreferences {
-                        should_screenshot: false,
-                        ..rendering_preferences
-                    });
-            }
+            self.camera
+                .borrow_mut()
+                .set_rendering_preferences(RenderingPreferences {
+                    should_screenshot: false,
+                    ..rendering_preferences
+                });
         }
 
         // at this point we can now garbage collect removed entities from the last step (but not this step yet!)

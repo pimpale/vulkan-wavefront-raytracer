@@ -40,19 +40,15 @@ layout(set = 0, binding = 6, scalar) readonly restrict buffer InputNeePdf {
     float input_nee_pdf[];
 };
 
-layout(set = 0, binding = 7, scalar) writeonly restrict buffer OutputOutgoingRadiance {
+layout(set = 0, binding = 7, scalar) restrict buffer OutputOutgoingRadiance {
     vec3 output_outgoing_radiance[];
 };
-
-layout(set = 0, binding = 8, scalar) writeonly restrict buffer OutputOmegaSamplingPdf {
-    float output_omega_sampling_pdf[];
-};
-
 
 layout(push_constant, scalar) uniform PushConstants {
     uint num_bounces;
     uint xsize;
     uint ysize;
+    uint spp;
 };
 
 void main() {
@@ -61,6 +57,7 @@ void main() {
     }
     const uint x = gl_GlobalInvocationID.x;
     const uint y = gl_GlobalInvocationID.y;
+    const float factor = 1.0 / float(spp);
 
     // compute the color for this sample
     vec3 outgoing_radiance = vec3(0.0);
@@ -87,8 +84,7 @@ void main() {
         outgoing_radiance = input_emissivity[bid] + input_reflectivity[bid] * outgoing_radiance * reweighting_factor * ray_valid;
         
         // write to global memory
-        output_outgoing_radiance[bid] = outgoing_radiance;
-        output_omega_sampling_pdf[bid] = q_omega;
+        output_outgoing_radiance[bid] += outgoing_radiance * factor;
     }
 }
 ",
