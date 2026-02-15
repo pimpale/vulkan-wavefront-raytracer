@@ -509,36 +509,3 @@ fn create_blas_visualization(blas_nodes: &Vec<BvhNode>) -> Vec<Vertex3D> {
 
     vertexes
 }
-
-// pub fn test_blas() -> Vec<Vertex3D> {
-//     let mut prim_aabbs = vec![];
-//     let mut prim_centroids = vec![];
-//     let mut prim_luminances = vec![];
-//     let mut prim_gl_ids = vec![];
-//     for i in 0..100 {
-//         // find a random point
-//         let x = rand::random::<f32>() * 40.0 - 20.0;
-//         let y = rand::random::<f32>() * 40.0 - 20.0;
-//         let z = rand::random::<f32>() * 40.0 - 20.0;
-//         let luminance = rand::random::<f32>() * 10.0;
-
-//         let v0 = Point3::new(x, y, z);
-//         let v1 = Point3::new(x, y + 0.1, z);
-//         let v2 = Point3::new(x, y, z + 0.1);
-
-//         prim_aabbs.push(Aabb::from_points(&[v0, v1, v2]));
-//         prim_centroids.push(Point3::from((v0.coords + v1.coords + v2.coords) / 3.0));
-//         prim_luminances.push(luminance);
-//         prim_gl_ids.push(i as u32);
-//     }
-
-//     let nodes = build_bvh(
-//         &prim_centroids,
-//         &prim_aabbs,
-//         &prim_luminances,
-//         None,
-//         &prim_gl_ids,
-//     );
-
-//     create_blas_visualization(&nodes)
-// }

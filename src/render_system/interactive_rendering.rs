@@ -650,7 +650,7 @@ impl Renderer {
         let sorter = Sorter::new(device.clone());
 
         let mut renderer = Renderer {
-            scale: 1,
+            scale: 2,
             num_bounces: 4,
             surface,
             command_buffer_allocator,
