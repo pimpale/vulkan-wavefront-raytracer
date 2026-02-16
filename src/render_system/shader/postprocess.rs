@@ -21,6 +21,7 @@ layout(set = 0, binding = 1, scalar) readonly restrict buffer InputDebugInfo {
 layout(set = 0, binding = 2) uniform writeonly image2D output_image;
 
 layout(push_constant, scalar) uniform PushConstants {
+    uint always_zero;
     uint debug_view;
     // how much larger the source image is compared to the rendering resolution
     uint srcscale;
@@ -30,7 +31,16 @@ layout(push_constant, scalar) uniform PushConstants {
     uint ysize;
 };
 
+void dummyUse() {
+    if(always_zero != 0) {
+        float d = input_outgoing_radiance[0].x
+            + input_debug_info[0].x;
+        imageStore(output_image, ivec2(0, 0), vec4(d));
+    }
+}
+
 void main() {
+    dummyUse();
     if(gl_GlobalInvocationID.x >= xsize || gl_GlobalInvocationID.y >= ysize) {
         return;
     }

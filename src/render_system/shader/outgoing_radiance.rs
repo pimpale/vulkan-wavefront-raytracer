@@ -45,13 +45,31 @@ layout(set = 0, binding = 7, scalar) restrict buffer OutputOutgoingRadiance {
 };
 
 layout(push_constant, scalar) uniform PushConstants {
+    uint always_zero;
     uint num_bounces;
     uint xsize;
     uint ysize;
     uint spp;
 };
 
+#define EPSILON 0.0001
+
+void dummyUse() {
+    if(always_zero != 0) {
+        float d = input_origin[0].x
+            + input_direction[0].x
+            + input_emissivity[0].x
+            + input_reflectivity[0].x
+            + input_nee_mis_weight[0]
+            + input_bsdf_pdf[0]
+            + input_nee_pdf[0]
+            + output_outgoing_radiance[0].x;
+        output_outgoing_radiance[0] = vec3(d);
+    }
+}
+
 void main() {
+    dummyUse();
     if(gl_GlobalInvocationID.x >= xsize || gl_GlobalInvocationID.y >= ysize) {
         return;
     }
@@ -79,7 +97,7 @@ void main() {
         float q_omega = nee_pdf * nee_mis_weight + (1.0 - nee_mis_weight) * bsdf_pdf;
         // this is the distribution we are trying to compute the expectation over
         float p_omega = bsdf_pdf;
-        float reweighting_factor = p_omega / q_omega;
+        float reweighting_factor = p_omega / (q_omega + EPSILON);
 
         outgoing_radiance = input_emissivity[bid] + input_reflectivity[bid] * outgoing_radiance * reweighting_factor * ray_valid;
         

@@ -1,17 +1,14 @@
 // Source:
 // https://github.com/jaesung-cs/vulkan_radix_sort
 
-use std::mem::size_of;
 use std::sync::Arc;
 use vulkano::{
     buffer::{BufferUsage, Subbuffer},
     command_buffer::{
-        AutoCommandBufferBuilder, CommandBufferUsage, CopyBufferInfo, PrimaryAutoCommandBuffer,
-        RecordingCommandBuffer, allocator::StandardCommandBufferAllocator,
+        AutoCommandBufferBuilder, CommandBufferUsage, CopyBufferInfo, RecordingCommandBuffer,
+        allocator::StandardCommandBufferAllocator,
     },
-    descriptor_set::allocator::StandardDescriptorSetAllocator,
     device::{Device, Queue},
-    memory::allocator::StandardMemoryAllocator,
     pipeline::{
         ComputePipeline, Pipeline, PipelineLayout, PipelineShaderStageCreateInfo,
         compute::ComputePipelineCreateInfo, layout::PipelineDescriptorSetLayoutCreateInfo,

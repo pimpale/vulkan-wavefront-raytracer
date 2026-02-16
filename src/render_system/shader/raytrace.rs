@@ -104,6 +104,7 @@ layout(set = 1, binding = 13, scalar) writeonly restrict buffer OutputsDebugInfo
 
 
 layout(push_constant, scalar) uniform PushConstants {
+    uint always_zero;
     uint bounce;
     uint nee_type;
     uint sort_type;
@@ -113,6 +114,22 @@ layout(push_constant, scalar) uniform PushConstants {
     uint64_t tl_bvh_addr;
 };
 
+void dummyUse() {
+    if(always_zero != 0) {
+        float d = input_origin[0].x
+            + input_direction[0].x
+            + float(input_bounce_index[0]);
+        output_origin[0] = vec3(d);
+        output_direction[0] = vec3(d);
+        output_normal[0] = vec3(d);
+        output_emissivity[0] = vec3(d);
+        output_reflectivity[0] = vec3(d);
+        output_nee_mis_weight[0] = d;
+        output_bsdf_pdf[0] = d;
+        output_sort_key[0] = uint(d);
+        output_debug_info[0] = vec3(d);
+    }
+}
 
 // source: https://stackoverflow.com/questions/4200224/random-noise-functions-for-glsl
 // Construct a float with half-open range [0:1] using low 23 bits.
@@ -465,17 +482,16 @@ vec3 hsv2rgb(vec3 c)           // c = (hue, sat, val)
 }
 
 void main() {
+    dummyUse();
     // return early if we are out of bounds
     if(gl_GlobalInvocationID.x >= xsize * ysize) {
         return;
     }
     
     // tensor layout: [y, x, channel]
-    const uint bid = input_bounce_index[gl_GlobalInvocationID.x];
+    uint bid = input_bounce_index[gl_GlobalInvocationID.x];
     
-    // if(bounce== 1) {
-    //     output_debug_info[gl_GlobalInvocationID.x] = vec3(discretizePosition(input_origin[bid]))/1023.0;
-    // }
+
     const vec3 origin = input_origin[bid];
     const vec3 direction = input_direction[bid];
     const uint seed = murmur3_combine(invocation_seed, bid);
@@ -491,35 +507,6 @@ void main() {
         output_bsdf_pdf[bid] = 1.0;
         output_sort_key[bid] = 0;
         return;
-    }
-
-    if (bounce == 1) {
-        float sid = 0.0;
-        uint xval = gl_GlobalInvocationID.x >> 10;
-        uint yval = gl_GlobalInvocationID.x & 1023;
-        if(sort_type == 0) {
-            sid = float(gl_GlobalInvocationID.x)/float(1024*1024);
-        } else {
-            sid = float(interleaveBits2(uvec2(gl_GlobalInvocationID.x >> 10, gl_GlobalInvocationID.x & 1023)))/float(1024*1024*10);
-            // sid = mod(float(interleaveBits3(discretizePosition(origin)))/float(1<<8), 1.0);
-
-            // // Test interleaveBits2 function - outputs white (1.0) if all tests pass
-            // bool test1 = interleaveBits2(uvec2(0, 0)) == 0u;                           // both zero -> 0
-            // bool test2 = interleaveBits2(uvec2(0xFFFF, 0xFFFF)) == 0xFFFFFFFFu;       // both max -> all bits set
-            // bool test3 = interleaveBits2(uvec2(1, 0)) == 2u;                          // (1,0) -> 0b10 = 2
-            // bool test4 = interleaveBits2(uvec2(0, 1)) == 1u;                          // (0,1) -> 0b01 = 1
-            // bool test5 = interleaveBits2(uvec2(1, 1)) == 3u;                          // (1,1) -> 0b11 = 3
-            
-            // sid = (test1 && test2 && test3 && test4 && test5) ? 1.0 : 0.0;
-        }
-        // vec3 rainbow = hsv2rgb(vec3(sid, 1.0, 1.0));   // full-sat, full-value
-        vec3 rainbow = vec3(vec2(unInterleaveBits2(gl_GlobalInvocationID.x))/1023.0, 0.0);
-        // vec3 rainbow = vec3(xval, yval, 0.0)/1023.0;
-        output_debug_info[bid] = rainbow;              // or wherever needed
-
-        // vec3 subgroupCentroid = subgroupAdd(origin) / float(gl_SubgroupSize);
-        // float distance = length(subgroupCentroid - origin);
-        // output_debug_info[bid] = vec3(distance)/100.0;
     }
 
     // get intersection info
@@ -602,7 +589,7 @@ void main() {
         bsdf_pdf = 1.0;
     } else {
         // offset origin slightly to avoid self intersection
-        new_origin += EPSILON_BLOCK*1.5 * ics.normal;
+        new_origin += EPSILON_BLOCK * ics.normal;
 
 
         // lambertian scattering
@@ -682,15 +669,7 @@ void main() {
     output_reflectivity[bid] = reflectivity;
     output_nee_mis_weight[bid] = light_pdf_mis_weight;
     output_bsdf_pdf[bid] = bsdf_pdf;
-
-
-    if(sort_type == 0) {
-        output_sort_key[bid] = bid;
-    } else {
-        output_sort_key[bid] = bid;
-        // output_sort_key[bid] = interleaveBits2(uvec2(gl_GlobalInvocationID.x/1024, gl_GlobalInvocationID.x%1024));
-        // output_sort_key[bid] = interleaveBits3(discretizePosition(new_origin));
-    }
+    output_sort_key[bid] = bid;
 }
 ",
 }

@@ -50,7 +50,7 @@ pub struct RenderingPreferences {
 impl Default for RenderingPreferences {
     fn default() -> RenderingPreferences {
         RenderingPreferences {
-            spp: 4,
+            spp: 1,
             nee_type: 0,
             debug_view: 0,
             sort_type: 0,

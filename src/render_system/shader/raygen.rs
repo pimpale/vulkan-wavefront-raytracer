@@ -30,10 +30,18 @@ struct Camera {
 };
 
 layout(push_constant, scalar) uniform PushConstants {
+    uint always_zero;
     Camera camera;
     uint invocation_seed;
 } push_constants;
 
+void dummyUse() {
+    if(push_constants.always_zero != 0) {
+        output_origin[0] = vec3(0);
+        output_direction[0] = vec3(0);
+        output_bounce_indices[0] = 0;
+    }
+}
 
 // source: https://stackoverflow.com/questions/4200224/random-noise-functions-for-glsl
 // Construct a float with half-open range [0:1] using low 23 bits.
@@ -86,6 +94,7 @@ vec2 screen_to_uv(uvec2 screen, uvec2 screen_size) {
 }
 
 void main() {
+    dummyUse();
     Camera camera = push_constants.camera;
     if(gl_GlobalInvocationID.x >= camera.screen_size.x || gl_GlobalInvocationID.y >= camera.screen_size.y) {
         return;

@@ -1022,6 +1022,7 @@ impl Renderer {
                         &self.raygen_pipeline.layout(),
                         0,
                         &raygen::PushConstants {
+                            always_zero: 0,
                             camera: raygen::Camera {
                                 eye: eye.coords,
                                 front,
@@ -1223,6 +1224,7 @@ impl Renderer {
                             &self.raytrace_pipeline.layout(),
                             0,
                             &raytrace::PushConstants {
+                                always_zero: 0,
                                 nee_type: rendering_preferences.nee_type,
                                 sort_type: rendering_preferences.sort_type,
                                 bounce: bounce,
@@ -1335,6 +1337,11 @@ impl Renderer {
                                         range: b * sect_sz..(b + 1) * sect_sz,
                                     },
                                 ),
+                                // output debug info
+                                WriteDescriptorSet::buffer(
+                                    7,
+                                    self.debug_info[self.frame_count % MIN_IMAGE_COUNT].clone(),
+                                ),
                             ],
                         )
                         .unwrap()
@@ -1342,6 +1349,7 @@ impl Renderer {
                             &self.nee_pdf_pipeline.layout(),
                             0,
                             &nee_pdf::PushConstants {
+                                always_zero: 0,
                                 nee_type: rendering_preferences.nee_type,
                                 xsize: extent[0],
                                 ysize: extent[1],
@@ -1378,10 +1386,10 @@ impl Renderer {
                         &self.outgoing_radiance_pipeline.layout(),
                         0,
                         &[
-                            // WriteDescriptorSet::buffer(
-                            //     0,
-                            //     self.bounce_origins[self.frame_count % MIN_IMAGE_COUNT].clone(),
-                            // ),
+                            WriteDescriptorSet::buffer(
+                                0,
+                                self.ray_origins[self.frame_count % MIN_IMAGE_COUNT].clone(),
+                            ),
                             WriteDescriptorSet::buffer(
                                 1,
                                 self.ray_directions[self.frame_count % MIN_IMAGE_COUNT].clone(),
@@ -1420,6 +1428,7 @@ impl Renderer {
                         &self.outgoing_radiance_pipeline.layout(),
                         0,
                         &outgoing_radiance::PushConstants {
+                            always_zero: 0,
                             num_bounces: self.num_bounces,
                             xsize: extent[0],
                             ysize: extent[1],
@@ -1499,6 +1508,7 @@ impl Renderer {
                     &self.postprocess_pipeline.layout(),
                     0,
                     &postprocess::PushConstants {
+                        always_zero: 0,
                         debug_view: rendering_preferences.debug_view,
                         srcscale: poolsize,
                         dstscale: poolsize,
@@ -1708,7 +1718,7 @@ impl Renderer {
         };
 
         let test_prefs = RenderingPreferences {
-            spp: 128,
+            spp: 2048,
             nee_type: 1,
             ..Default::default()
         };

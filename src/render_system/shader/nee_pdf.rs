@@ -12,7 +12,8 @@ vulkano_shaders::shader! {
 #extension GL_EXT_nonuniform_qualifier: require
 
 #define M_PI 3.1415926535897932384626433832795
-#define EPSILON_BLOCK 0.0001
+#define EPSILON_BLOCK 0.001
+#define EPSILON 0.0001
 
 layout(local_size_x = 32, local_size_y = 32, local_size_z = 1) in;
 
@@ -83,11 +84,23 @@ layout(set = 0, binding = 7) writeonly restrict buffer OutputsDebugInfo {
 };
 
 layout(push_constant, scalar) uniform PushConstants {
+    uint always_zero;
     uint nee_type;
     uint xsize;
     uint ysize;
     uint64_t tl_bvh_addr;
 };
+
+void dummyUse() {
+    if(always_zero != 0) {
+        float d = intersection_normal[0].x
+            + input_intersection_position[0].x
+            + intersection_out_direction[0].x
+            + input_nee_mis_weight[0];
+        output_nee_pdf[0] = d;
+        output_debug_info[0] = vec3(d);
+    }
+}
 
 float lengthSquared(vec3 v) {
     return dot(v, v);
@@ -263,8 +276,11 @@ float computeNeePdf(
     // probability of picking this ray if we were picking a random point on the light
     const float light_distance = length(point_on_triangle - shading_point);
     const float light_area = triangleArea(tri_light);
-    const float cos_theta = dot(shading_normal, outgoing_direction);
-    const float pointPickProbability = light_distance*light_distance/(cos_theta*light_area);
+    // cosine at the light surface (angle between light normal and direction toward shading point)
+    vec3 light_normal = normalize(cross(tri_light[1] - tri_light[0], tri_light[2] - tri_light[0]));
+    vec3 dir_to_shading = normalize(shading_point - point_on_triangle);
+    const float cos_theta_light = abs(dot(light_normal, dir_to_shading));
+    const float pointPickProbability = light_distance*light_distance/(cos_theta_light*light_area);
 
     // probability of picking the primitive
     uint light_bvh_node_idx = LightVertex(id.light_vertex_buffer_addr)[3*light_primitive_id].light_bvh_node_idx;
@@ -279,6 +295,7 @@ float computeNeePdf(
 }
 
 void main() {
+    dummyUse();
     // return early if we are out of bounds
     if(gl_GlobalInvocationID.x >= xsize || gl_GlobalInvocationID.y >= ysize) {
         return;
@@ -332,7 +349,12 @@ void main() {
             );
         }
     }
-    
+
+    // if nan, set to EPSILON
+    if(nee_pdf != nee_pdf) {
+        nee_pdf = EPSILON;
+    }
+
     output_nee_pdf[bid] = nee_pdf;
 }
 ",
