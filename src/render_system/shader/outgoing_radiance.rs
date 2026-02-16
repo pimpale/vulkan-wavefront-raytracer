@@ -44,6 +44,10 @@ layout(set = 0, binding = 7, scalar) restrict buffer OutputOutgoingRadiance {
     vec3 output_outgoing_radiance[];
 };
 
+layout(set = 0, binding = 8, scalar) writeonly restrict buffer OutputOmegaSamplingPdf {
+    float output_omega_sampling_pdf[];
+};
+
 layout(push_constant, scalar) uniform PushConstants {
     uint always_zero;
     uint num_bounces;
@@ -62,9 +66,9 @@ void dummyUse() {
             + input_reflectivity[0].x
             + input_nee_mis_weight[0]
             + input_bsdf_pdf[0]
-            + input_nee_pdf[0]
-            + output_outgoing_radiance[0].x;
+            + input_nee_pdf[0];
         output_outgoing_radiance[0] = vec3(d);
+        output_omega_sampling_pdf[0] = d;
     }
 }
 
@@ -103,6 +107,7 @@ void main() {
         
         // write to global memory
         output_outgoing_radiance[bid] += outgoing_radiance * factor;
+        output_omega_sampling_pdf[bid] = q_omega;
     }
 }
 ",

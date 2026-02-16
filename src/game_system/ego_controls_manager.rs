@@ -109,6 +109,7 @@ impl Manager for EgoControlsManager {
             let mut current_prefs = camera.rendering_preferences();
             current_prefs.debug_view = match current_prefs.debug_view {
                 0 => 1,
+                1 => 2,
                 _ => 0,
             };
             dbg!(current_prefs.debug_view);
@@ -122,6 +123,19 @@ impl Manager for EgoControlsManager {
                 _ => 0,
             };
             dbg!(current_prefs.sort_type);
+            camera.set_rendering_preferences(current_prefs);
+        }
+
+        if UserInputState::key_pressed(window_events, KeyCode::KeyR) {
+            let mut current_prefs = camera.rendering_preferences();
+            current_prefs.restir_spatial_iterations = match current_prefs.restir_spatial_iterations {
+                0 => 1,
+                1 => 3,
+                3 => 5,
+                5 => 10,
+                _ => 0,
+            };
+            dbg!(current_prefs.restir_spatial_iterations);
             camera.set_rendering_preferences(current_prefs);
         }
 

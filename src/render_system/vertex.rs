@@ -52,3 +52,19 @@ pub struct InstanceData {
     pub light_bvh_tl_idx: u32,
     pub transform: [[f32; 3]; 4],
 }
+
+#[derive(Clone, Copy, Debug, BufferContents, Default)]
+#[repr(C)]
+pub struct RestirReservoirData {
+    pub z_x_v: [f32; 3],
+    pub z_n_v: [f32; 3],
+    pub z_x_s: [f32; 3],
+    pub z_n_s: [f32; 3],
+    pub z_l_o_hat: [f32; 3],
+    pub z_p_omega: f32,
+    pub z_seed: u32,
+    pub ucw: f32,
+    pub m: u32,
+    pub w_sum: f32,
+}
+

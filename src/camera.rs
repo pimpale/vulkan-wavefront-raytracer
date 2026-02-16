@@ -39,12 +39,14 @@ pub struct RenderingPreferences {
     pub spp: u32,
     // 0 == none, 1 == nee
     pub nee_type: u32,
-    // 0 == no debug view, 1 == debug view
+    // 0 == no debug view, 1 == restir view, 2 == debug view
     pub debug_view: u32,
     // 0 == no sort, 1 == sort
     pub sort_type: u32,
     // 0 == no screenshot, 1 == screenshot
     pub should_screenshot: bool,
+    // number of spatial resampling iterations for ReSTIR (0 == disabled)
+    pub restir_spatial_iterations: u32,
 }
 
 impl Default for RenderingPreferences {
@@ -55,6 +57,7 @@ impl Default for RenderingPreferences {
             debug_view: 0,
             sort_type: 0,
             should_screenshot: false,
+            restir_spatial_iterations: 0,
         }
     }
 }

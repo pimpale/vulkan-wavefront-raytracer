@@ -48,8 +48,11 @@ use super::{
     bvh::BvhNode,
     radix_sort::{Sorter, SorterStorageRequirements},
     scene::Scene,
-    shader::{nee_pdf, outgoing_radiance, postprocess, raygen, raytrace},
-    vertex::InstanceData,
+    shader::{
+        nee_pdf, outgoing_radiance, postprocess, raygen, raytrace, restir_finalize,
+        restir_spatial_resampling, restir_temporal_resampling,
+    },
+    vertex::{InstanceData, RestirReservoirData},
 };
 
 const MIN_IMAGE_COUNT: usize = 3;
@@ -295,10 +298,16 @@ pub struct Renderer {
     bounce_nee_pdf: Vec<Subbuffer<[f32]>>,
     // the outgoing radiance at each bounce point
     bounce_outgoing_radiance: Vec<Subbuffer<[f32]>>,
+    // the sampling pdf of the next direction (q_omega)
+    bounce_omega_sampling_pdf: Vec<Subbuffer<[f32]>>,
     // the sort keys for each bounce
     sort_keys: Vec<Subbuffer<[u32]>>,
     debug_info: Vec<Subbuffer<[f32]>>,
     debug_info_2: Vec<Subbuffer<[f32]>>,
+    // ReSTIR buffers
+    restir_temporal_reservoir: Vec<Subbuffer<[RestirReservoirData]>>,
+    restir_spatial_reservoir: Vec<Subbuffer<[RestirReservoirData]>>,
+    restir_final_target: Vec<Subbuffer<[f32]>>,
     host_output_buffers: Vec<Subbuffer<[u8]>>,
     frame_swapchain_image_acquired_semaphore: Vec<Arc<sync::semaphore::Semaphore>>,
     frame_finished_rendering_semaphore: Vec<Arc<sync::semaphore::Semaphore>>,
@@ -310,6 +319,9 @@ pub struct Renderer {
     nee_pdf_pipeline: Arc<ComputePipeline>,
     outgoing_radiance_pipeline: Arc<ComputePipeline>,
     postprocess_pipeline: Arc<ComputePipeline>,
+    restir_temporal_resampling_pipeline: Arc<ComputePipeline>,
+    restir_spatial_resampling_pipeline: Arc<ComputePipeline>,
+    restir_finalize_pipeline: Arc<ComputePipeline>,
     wdd_needs_rebuild: bool,
     frame_count: usize,
     rng: rand::prelude::ThreadRng,
@@ -579,6 +591,102 @@ impl Renderer {
             .unwrap()
         };
 
+        let restir_temporal_resampling_pipeline = {
+            let cs = restir_temporal_resampling::load(device.clone())
+                .unwrap()
+                .entry_point("main")
+                .unwrap();
+
+            let stage = PipelineShaderStageCreateInfo::new(cs);
+
+            let layout = {
+                let mut layout_create_info =
+                    PipelineDescriptorSetLayoutCreateInfo::from_stages(&[stage.clone()]);
+
+                layout_create_info.set_layouts[0].flags |=
+                    DescriptorSetLayoutCreateFlags::PUSH_DESCRIPTOR;
+
+                PipelineLayout::new(
+                    device.clone(),
+                    layout_create_info
+                        .into_pipeline_layout_create_info(device.clone())
+                        .unwrap(),
+                )
+                .unwrap()
+            };
+
+            ComputePipeline::new(
+                device.clone(),
+                None,
+                ComputePipelineCreateInfo::stage_layout(stage, layout),
+            )
+            .unwrap()
+        };
+
+        let restir_spatial_resampling_pipeline = {
+            let cs = restir_spatial_resampling::load(device.clone())
+                .unwrap()
+                .entry_point("main")
+                .unwrap();
+
+            let stage = PipelineShaderStageCreateInfo::new(cs);
+
+            let layout = {
+                let mut layout_create_info =
+                    PipelineDescriptorSetLayoutCreateInfo::from_stages(&[stage.clone()]);
+
+                layout_create_info.set_layouts[0].flags |=
+                    DescriptorSetLayoutCreateFlags::PUSH_DESCRIPTOR;
+
+                PipelineLayout::new(
+                    device.clone(),
+                    layout_create_info
+                        .into_pipeline_layout_create_info(device.clone())
+                        .unwrap(),
+                )
+                .unwrap()
+            };
+
+            ComputePipeline::new(
+                device.clone(),
+                None,
+                ComputePipelineCreateInfo::stage_layout(stage, layout),
+            )
+            .unwrap()
+        };
+
+        let restir_finalize_pipeline = {
+            let cs = restir_finalize::load(device.clone())
+                .unwrap()
+                .entry_point("main")
+                .unwrap();
+
+            let stage = PipelineShaderStageCreateInfo::new(cs);
+
+            let layout = {
+                let mut layout_create_info =
+                    PipelineDescriptorSetLayoutCreateInfo::from_stages(&[stage.clone()]);
+
+                layout_create_info.set_layouts[0].flags |=
+                    DescriptorSetLayoutCreateFlags::PUSH_DESCRIPTOR;
+
+                PipelineLayout::new(
+                    device.clone(),
+                    layout_create_info
+                        .into_pipeline_layout_create_info(device.clone())
+                        .unwrap(),
+                )
+                .unwrap()
+            };
+
+            ComputePipeline::new(
+                device.clone(),
+                None,
+                ComputePipelineCreateInfo::stage_layout(stage, layout),
+            )
+            .unwrap()
+        };
+
         let texture_atlas = load_textures(
             texture_atlas,
             queue.clone(),
@@ -640,7 +748,7 @@ impl Renderer {
         let sorter = Sorter::new(device.clone());
 
         let mut renderer = Renderer {
-            num_bounces: 4,
+            num_bounces: 2,
             surface,
             command_buffer_allocator,
             device,
@@ -651,6 +759,9 @@ impl Renderer {
             nee_pdf_pipeline,
             outgoing_radiance_pipeline,
             postprocess_pipeline,
+            restir_temporal_resampling_pipeline,
+            restir_spatial_resampling_pipeline,
+            restir_finalize_pipeline,
             swapchain_images,
             swapchain_image_views,
             frame_swapchain_image_acquired_semaphore,
@@ -672,9 +783,13 @@ impl Renderer {
             bounce_bsdf_pdf: vec![],
             bounce_nee_pdf: vec![],
             bounce_outgoing_radiance: vec![],
+            bounce_omega_sampling_pdf: vec![],
             sort_keys: vec![],
             debug_info: vec![],
             debug_info_2: vec![],
+            restir_temporal_reservoir: vec![],
+            restir_spatial_reservoir: vec![],
+            restir_final_target: vec![],
             sorter_storage: vec![],
             host_output_buffers: vec![],
             rng: rand::rng(),
@@ -717,11 +832,11 @@ impl Renderer {
     }
 
     pub fn create_buffers(&mut self) {
-        // ray origins
+        // ray origins (Transfer for restir copy_buffer source)
         self.ray_origins = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
-            WindowSizeSetupUsage::Default,
+            WindowSizeSetupUsage::Transfer,
             3 * (self.num_bounces + 1),
         );
 
@@ -741,11 +856,11 @@ impl Renderer {
             1 * self.num_bounces,
         );
 
-        // normals
+        // normals (Transfer for restir copy_buffer source)
         self.bounce_normals = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
-            WindowSizeSetupUsage::Default,
+            WindowSizeSetupUsage::Transfer,
             3 * self.num_bounces,
         );
 
@@ -789,12 +904,20 @@ impl Renderer {
             1 * self.num_bounces,
         );
 
-        // outgoing radiance
+        // outgoing radiance (Transfer for restir copy_buffer source)
         self.bounce_outgoing_radiance = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
             WindowSizeSetupUsage::Transfer,
             3 * self.num_bounces,
+        );
+
+        // omega sampling pdf (q_omega) - Transfer for restir copy_buffer source
+        self.bounce_omega_sampling_pdf = window_size_dependent_setup(
+            self.memory_allocator.clone(),
+            &self.swapchain_images,
+            WindowSizeSetupUsage::Transfer,
+            1 * self.num_bounces,
         );
 
         // sort keys
@@ -813,6 +936,26 @@ impl Renderer {
             3,
         );
         self.debug_info_2 = window_size_dependent_setup(
+            self.memory_allocator.clone(),
+            &self.swapchain_images,
+            WindowSizeSetupUsage::Transfer,
+            3,
+        );
+
+        // ReSTIR buffers (AoS)
+        self.restir_temporal_reservoir = window_size_dependent_setup(
+            self.memory_allocator.clone(),
+            &self.swapchain_images,
+            WindowSizeSetupUsage::Transfer,
+            1,
+        );
+        self.restir_spatial_reservoir = window_size_dependent_setup(
+            self.memory_allocator.clone(),
+            &self.swapchain_images,
+            WindowSizeSetupUsage::Transfer,
+            1,
+        );
+        self.restir_final_target = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
             WindowSizeSetupUsage::Transfer,
@@ -884,6 +1027,8 @@ impl Renderer {
                 luminance_bvh,
             ) = scene.get_tlas();
 
+            let fi = self.frame_count % MIN_IMAGE_COUNT;
+
             // Whenever the window resizes we need to recreate everything dependent on the window size.
             // In this example that includes the swapchain, the framebuffers and the dynamic state viewport.
             if self.wdd_needs_rebuild {
@@ -908,11 +1053,7 @@ impl Renderer {
                 match self
                     .swapchain
                     .acquire_next_image(&AcquireNextImageInfo {
-                        semaphore: Some(
-                            self.frame_swapchain_image_acquired_semaphore
-                                [self.frame_count % MIN_IMAGE_COUNT]
-                                .clone(),
-                        ),
+                        semaphore: Some(self.frame_swapchain_image_acquired_semaphore[fi].clone()),
                         ..Default::default()
                     })
                     .map_err(Validated::unwrap)
@@ -952,7 +1093,7 @@ impl Renderer {
             // blank the output buffer so that we can accumulate the samples
             builder
                 .fill_buffer(
-                    &self.bounce_outgoing_radiance[self.frame_count % MIN_IMAGE_COUNT]
+                    &self.bounce_outgoing_radiance[fi]
                         .clone()
                         .reinterpret::<[u32]>(),
                     0,
@@ -962,20 +1103,10 @@ impl Renderer {
             for sample_index in 0..rendering_preferences.spp {
                 // blank the debug info and debug info 2 buffer
                 builder
-                    .fill_buffer(
-                        &self.debug_info[self.frame_count % MIN_IMAGE_COUNT]
-                            .clone()
-                            .reinterpret::<[u32]>(),
-                        0,
-                    )
+                    .fill_buffer(&self.debug_info[fi].clone().reinterpret::<[u32]>(), 0)
                     .unwrap();
                 builder
-                    .fill_buffer(
-                        &self.debug_info_2[self.frame_count % MIN_IMAGE_COUNT]
-                            .clone()
-                            .reinterpret::<[u32]>(),
-                        0,
-                    )
+                    .fill_buffer(&self.debug_info_2[fi].clone().reinterpret::<[u32]>(), 0)
                     .unwrap();
 
                 // insert pipeline barrier from transfer to compute
@@ -1003,18 +1134,9 @@ impl Renderer {
                         &self.raygen_pipeline.layout(),
                         0,
                         &[
-                            WriteDescriptorSet::buffer(
-                                0,
-                                self.ray_origins[self.frame_count % MIN_IMAGE_COUNT].clone(),
-                            ),
-                            WriteDescriptorSet::buffer(
-                                1,
-                                self.ray_directions[self.frame_count % MIN_IMAGE_COUNT].clone(),
-                            ),
-                            WriteDescriptorSet::buffer(
-                                2,
-                                self.bounce_indices[self.frame_count % MIN_IMAGE_COUNT].clone(),
-                            ),
+                            WriteDescriptorSet::buffer(0, self.ray_origins[fi].clone()),
+                            WriteDescriptorSet::buffer(1, self.ray_directions[fi].clone()),
+                            WriteDescriptorSet::buffer(2, self.bounce_indices[fi].clone()),
                         ],
                     )
                     .unwrap()
@@ -1065,18 +1187,14 @@ impl Renderer {
                             &mut builder,
                             ray_count as u32,
                             // keys in (morton codes)
-                            self.sort_keys[self.frame_count % MIN_IMAGE_COUNT].clone(),
+                            self.sort_keys[fi].clone(),
                             // values in (index of the ray in memory (which is the same as the bounce index at the first bounce)
-                            self.bounce_indices[self.frame_count % MIN_IMAGE_COUNT]
-                                .clone()
-                                .slice(0..ray_count),
-                            self.sorter_storage[self.frame_count % MIN_IMAGE_COUNT].clone(),
+                            self.bounce_indices[fi].clone().slice(0..ray_count),
+                            self.sorter_storage[fi].clone(),
                             // keys out (we don't care about the sorted keys)
-                            self.debug_info_2[self.frame_count % MIN_IMAGE_COUNT]
-                                .clone()
-                                .reinterpret(),
+                            self.debug_info_2[fi].clone().reinterpret(),
                             // values out (needs to be written to the bounce indices buffer that will be used for the next bounce)
-                            self.bounce_indices[self.frame_count % MIN_IMAGE_COUNT]
+                            self.bounce_indices[fi]
                                 .clone()
                                 .slice(b * ray_count..(b + 1) * ray_count),
                         );
@@ -1108,10 +1226,7 @@ impl Renderer {
                                 WriteDescriptorSet::buffer_with_range(
                                     2,
                                     DescriptorBufferInfo {
-                                        buffer: self.ray_origins
-                                            [self.frame_count % MIN_IMAGE_COUNT]
-                                            .as_bytes()
-                                            .clone(),
+                                        buffer: self.ray_origins[fi].as_bytes().clone(),
                                         range: b * 3 * sect_sz..(b + 1) * 3 * sect_sz,
                                     },
                                 ),
@@ -1119,10 +1234,7 @@ impl Renderer {
                                 WriteDescriptorSet::buffer_with_range(
                                     3,
                                     DescriptorBufferInfo {
-                                        buffer: self.ray_directions
-                                            [self.frame_count % MIN_IMAGE_COUNT]
-                                            .as_bytes()
-                                            .clone(),
+                                        buffer: self.ray_directions[fi].as_bytes().clone(),
                                         range: b * 3 * sect_sz..(b + 1) * 3 * sect_sz,
                                     },
                                 ),
@@ -1130,10 +1242,7 @@ impl Renderer {
                                 WriteDescriptorSet::buffer_with_range(
                                     4,
                                     DescriptorBufferInfo {
-                                        buffer: self.bounce_indices
-                                            [self.frame_count % MIN_IMAGE_COUNT]
-                                            .as_bytes()
-                                            .clone(),
+                                        buffer: self.bounce_indices[fi].as_bytes().clone(),
                                         range: b * sect_sz..(b + 1) * sect_sz,
                                     },
                                 ),
@@ -1141,10 +1250,7 @@ impl Renderer {
                                 WriteDescriptorSet::buffer_with_range(
                                     5,
                                     DescriptorBufferInfo {
-                                        buffer: self.ray_origins
-                                            [self.frame_count % MIN_IMAGE_COUNT]
-                                            .as_bytes()
-                                            .clone(),
+                                        buffer: self.ray_origins[fi].as_bytes().clone(),
                                         range: (b + 1) * 3 * sect_sz..(b + 2) * 3 * sect_sz,
                                     },
                                 ),
@@ -1152,71 +1258,47 @@ impl Renderer {
                                 WriteDescriptorSet::buffer_with_range(
                                     6,
                                     DescriptorBufferInfo {
-                                        buffer: self.ray_directions
-                                            [self.frame_count % MIN_IMAGE_COUNT]
-                                            .as_bytes()
-                                            .clone(),
+                                        buffer: self.ray_directions[fi].as_bytes().clone(),
                                         range: (b + 1) * 3 * sect_sz..(b + 2) * 3 * sect_sz,
                                     },
                                 ),
                                 WriteDescriptorSet::buffer_with_range(
                                     7,
                                     DescriptorBufferInfo {
-                                        buffer: self.bounce_normals
-                                            [self.frame_count % MIN_IMAGE_COUNT]
-                                            .as_bytes()
-                                            .clone(),
+                                        buffer: self.bounce_normals[fi].as_bytes().clone(),
                                         range: b * 3 * sect_sz..(b + 1) * 3 * sect_sz,
                                     },
                                 ),
                                 WriteDescriptorSet::buffer_with_range(
                                     8,
                                     DescriptorBufferInfo {
-                                        buffer: self.bounce_emissivity
-                                            [self.frame_count % MIN_IMAGE_COUNT]
-                                            .as_bytes()
-                                            .clone(),
+                                        buffer: self.bounce_emissivity[fi].as_bytes().clone(),
                                         range: b * 3 * sect_sz..(b + 1) * 3 * sect_sz,
                                     },
                                 ),
                                 WriteDescriptorSet::buffer_with_range(
                                     9,
                                     DescriptorBufferInfo {
-                                        buffer: self.bounce_reflectivity
-                                            [self.frame_count % MIN_IMAGE_COUNT]
-                                            .as_bytes()
-                                            .clone(),
+                                        buffer: self.bounce_reflectivity[fi].as_bytes().clone(),
                                         range: b * 3 * sect_sz..(b + 1) * 3 * sect_sz,
                                     },
                                 ),
                                 WriteDescriptorSet::buffer_with_range(
                                     10,
                                     DescriptorBufferInfo {
-                                        buffer: self.bounce_nee_mis_weight
-                                            [self.frame_count % MIN_IMAGE_COUNT]
-                                            .as_bytes()
-                                            .clone(),
+                                        buffer: self.bounce_nee_mis_weight[fi].as_bytes().clone(),
                                         range: b * sect_sz..(b + 1) * sect_sz,
                                     },
                                 ),
                                 WriteDescriptorSet::buffer_with_range(
                                     11,
                                     DescriptorBufferInfo {
-                                        buffer: self.bounce_bsdf_pdf
-                                            [self.frame_count % MIN_IMAGE_COUNT]
-                                            .as_bytes()
-                                            .clone(),
+                                        buffer: self.bounce_bsdf_pdf[fi].as_bytes().clone(),
                                         range: b * sect_sz..(b + 1) * sect_sz,
                                     },
                                 ),
-                                WriteDescriptorSet::buffer(
-                                    12,
-                                    self.sort_keys[self.frame_count % MIN_IMAGE_COUNT].clone(),
-                                ),
-                                WriteDescriptorSet::buffer(
-                                    13,
-                                    self.debug_info[self.frame_count % MIN_IMAGE_COUNT].clone(),
-                                ),
+                                WriteDescriptorSet::buffer(12, self.sort_keys[fi].clone()),
+                                WriteDescriptorSet::buffer(13, self.debug_info[fi].clone()),
                             ],
                         )
                         .unwrap()
@@ -1286,10 +1368,7 @@ impl Renderer {
                                 WriteDescriptorSet::buffer_with_range(
                                     2,
                                     DescriptorBufferInfo {
-                                        buffer: self.bounce_normals
-                                            [self.frame_count % MIN_IMAGE_COUNT]
-                                            .as_bytes()
-                                            .clone(),
+                                        buffer: self.bounce_normals[fi].as_bytes().clone(),
                                         range: (b) * 3 * sect_sz..(b + 1) * 3 * sect_sz,
                                     },
                                 ),
@@ -1297,10 +1376,7 @@ impl Renderer {
                                 WriteDescriptorSet::buffer_with_range(
                                     3,
                                     DescriptorBufferInfo {
-                                        buffer: self.ray_origins
-                                            [self.frame_count % MIN_IMAGE_COUNT]
-                                            .as_bytes()
-                                            .clone(),
+                                        buffer: self.ray_origins[fi].as_bytes().clone(),
                                         range: (b + 1) * 3 * sect_sz..(b + 2) * 3 * sect_sz,
                                     },
                                 ),
@@ -1308,10 +1384,7 @@ impl Renderer {
                                 WriteDescriptorSet::buffer_with_range(
                                     4,
                                     DescriptorBufferInfo {
-                                        buffer: self.ray_directions
-                                            [self.frame_count % MIN_IMAGE_COUNT]
-                                            .as_bytes()
-                                            .clone(),
+                                        buffer: self.ray_directions[fi].as_bytes().clone(),
                                         range: (b + 1) * 3 * sect_sz..(b + 2) * 3 * sect_sz,
                                     },
                                 ),
@@ -1319,10 +1392,7 @@ impl Renderer {
                                 WriteDescriptorSet::buffer_with_range(
                                     5,
                                     DescriptorBufferInfo {
-                                        buffer: self.bounce_nee_mis_weight
-                                            [self.frame_count % MIN_IMAGE_COUNT]
-                                            .as_bytes()
-                                            .clone(),
+                                        buffer: self.bounce_nee_mis_weight[fi].as_bytes().clone(),
                                         range: b * sect_sz..(b + 1) * sect_sz,
                                     },
                                 ),
@@ -1330,18 +1400,12 @@ impl Renderer {
                                 WriteDescriptorSet::buffer_with_range(
                                     6,
                                     DescriptorBufferInfo {
-                                        buffer: self.bounce_nee_pdf
-                                            [self.frame_count % MIN_IMAGE_COUNT]
-                                            .as_bytes()
-                                            .clone(),
+                                        buffer: self.bounce_nee_pdf[fi].as_bytes().clone(),
                                         range: b * sect_sz..(b + 1) * sect_sz,
                                     },
                                 ),
                                 // output debug info
-                                WriteDescriptorSet::buffer(
-                                    7,
-                                    self.debug_info[self.frame_count % MIN_IMAGE_COUNT].clone(),
-                                ),
+                                WriteDescriptorSet::buffer(7, self.debug_info[fi].clone()),
                             ],
                         )
                         .unwrap()
@@ -1386,40 +1450,20 @@ impl Renderer {
                         &self.outgoing_radiance_pipeline.layout(),
                         0,
                         &[
-                            WriteDescriptorSet::buffer(
-                                0,
-                                self.ray_origins[self.frame_count % MIN_IMAGE_COUNT].clone(),
-                            ),
-                            WriteDescriptorSet::buffer(
-                                1,
-                                self.ray_directions[self.frame_count % MIN_IMAGE_COUNT].clone(),
-                            ),
-                            WriteDescriptorSet::buffer(
-                                2,
-                                self.bounce_emissivity[self.frame_count % MIN_IMAGE_COUNT].clone(),
-                            ),
-                            WriteDescriptorSet::buffer(
-                                3,
-                                self.bounce_reflectivity[self.frame_count % MIN_IMAGE_COUNT]
-                                    .clone(),
-                            ),
-                            WriteDescriptorSet::buffer(
-                                4,
-                                self.bounce_nee_mis_weight[self.frame_count % MIN_IMAGE_COUNT]
-                                    .clone(),
-                            ),
-                            WriteDescriptorSet::buffer(
-                                5,
-                                self.bounce_bsdf_pdf[self.frame_count % MIN_IMAGE_COUNT].clone(),
-                            ),
-                            WriteDescriptorSet::buffer(
-                                6,
-                                self.bounce_nee_pdf[self.frame_count % MIN_IMAGE_COUNT].clone(),
-                            ),
+                            WriteDescriptorSet::buffer(0, self.ray_origins[fi].clone()),
+                            WriteDescriptorSet::buffer(1, self.ray_directions[fi].clone()),
+                            WriteDescriptorSet::buffer(2, self.bounce_emissivity[fi].clone()),
+                            WriteDescriptorSet::buffer(3, self.bounce_reflectivity[fi].clone()),
+                            WriteDescriptorSet::buffer(4, self.bounce_nee_mis_weight[fi].clone()),
+                            WriteDescriptorSet::buffer(5, self.bounce_bsdf_pdf[fi].clone()),
+                            WriteDescriptorSet::buffer(6, self.bounce_nee_pdf[fi].clone()),
                             WriteDescriptorSet::buffer(
                                 7,
-                                self.bounce_outgoing_radiance[self.frame_count % MIN_IMAGE_COUNT]
-                                    .clone(),
+                                self.bounce_outgoing_radiance[fi].clone(),
+                            ),
+                            WriteDescriptorSet::buffer(
+                                8,
+                                self.bounce_omega_sampling_pdf[fi].clone(),
                             ),
                         ],
                     )
@@ -1433,6 +1477,177 @@ impl Renderer {
                             xsize: extent[0],
                             ysize: extent[1],
                             spp: rendering_preferences.spp,
+                        },
+                    )
+                    .unwrap()
+                    .dispatch(self.group_count_2d(&extent))
+                    .unwrap();
+            }
+
+            // --- ReSTIR GI pipeline ---
+
+            // barrier: compute -> compute (source buffers written by previous shaders)
+            builder
+                .pipeline_barrier(&DependencyInfo {
+                    memory_barriers: [MemoryBarrier {
+                        src_stages: PipelineStages::COMPUTE_SHADER,
+                        src_access: AccessFlags::SHADER_WRITE,
+                        dst_stages: PipelineStages::COMPUTE_SHADER,
+                        dst_access: AccessFlags::SHADER_READ | AccessFlags::SHADER_WRITE,
+                        ..Default::default()
+                    }]
+                    .as_ref()
+                    .into(),
+                    ..Default::default()
+                })
+                .unwrap();
+
+            // dispatch restir temporal resampling
+            {
+                builder
+                    .bind_pipeline_compute(&self.restir_temporal_resampling_pipeline)
+                    .unwrap()
+                    .push_descriptor_set(
+                        PipelineBindPoint::Compute,
+                        &self.restir_temporal_resampling_pipeline.layout(),
+                        0,
+                        &[
+                            WriteDescriptorSet::buffer(0, self.ray_origins[fi].clone()),
+                            WriteDescriptorSet::buffer(1, self.bounce_normals[fi].clone()),
+                            WriteDescriptorSet::buffer(
+                                2,
+                                self.bounce_outgoing_radiance[fi].clone(),
+                            ),
+                            WriteDescriptorSet::buffer(
+                                3,
+                                self.bounce_omega_sampling_pdf[fi].clone(),
+                            ),
+                            WriteDescriptorSet::buffer(
+                                4,
+                                self.restir_temporal_reservoir[fi].clone(),
+                            ),
+                            WriteDescriptorSet::buffer(5, self.debug_info[fi].clone()),
+                        ],
+                    )
+                    .unwrap()
+                    .push_constants(
+                        &self.restir_temporal_resampling_pipeline.layout(),
+                        0,
+                        &restir_temporal_resampling::PushConstants {
+                            always_zero: 0,
+                            invocation_seed: self.frame_count as u32 * 3,
+                            xsize: extent[0],
+                            ysize: extent[1],
+                        },
+                    )
+                    .unwrap()
+                    .dispatch(self.group_count_2d(&extent))
+                    .unwrap();
+            }
+
+            // barrier: compute -> compute
+            builder
+                .pipeline_barrier(&DependencyInfo {
+                    memory_barriers: [MemoryBarrier {
+                        src_stages: PipelineStages::COMPUTE_SHADER,
+                        src_access: AccessFlags::SHADER_WRITE,
+                        dst_stages: PipelineStages::COMPUTE_SHADER,
+                        dst_access: AccessFlags::SHADER_READ | AccessFlags::SHADER_WRITE,
+                        ..Default::default()
+                    }]
+                    .as_ref()
+                    .into(),
+                    ..Default::default()
+                })
+                .unwrap();
+
+            // dispatch restir spatial resampling
+            {
+                builder
+                    .bind_pipeline_compute(&self.restir_spatial_resampling_pipeline)
+                    .unwrap()
+                    .push_descriptor_set(
+                        PipelineBindPoint::Compute,
+                        &self.restir_spatial_resampling_pipeline.layout(),
+                        0,
+                        &[
+                            WriteDescriptorSet::buffer(
+                                0,
+                                self.restir_temporal_reservoir[fi].clone(),
+                            ),
+                            WriteDescriptorSet::buffer(
+                                1,
+                                self.restir_spatial_reservoir[fi].clone(),
+                            ),
+                            WriteDescriptorSet::buffer(2, self.debug_info[fi].clone()),
+                        ],
+                    )
+                    .unwrap()
+                    .push_constants(
+                        &self.restir_spatial_resampling_pipeline.layout(),
+                        0,
+                        &restir_spatial_resampling::PushConstants {
+                            always_zero: 0,
+                            num_iterations: rendering_preferences.restir_spatial_iterations,
+                            invocation_seed: self.frame_count as u32 * 3 + 1,
+                            xsize: extent[0],
+                            ysize: extent[1],
+                        },
+                    )
+                    .unwrap()
+                    .dispatch(self.group_count_2d(&extent))
+                    .unwrap();
+            }
+
+            // barrier: compute -> compute
+            builder
+                .pipeline_barrier(&DependencyInfo {
+                    memory_barriers: [MemoryBarrier {
+                        src_stages: PipelineStages::COMPUTE_SHADER,
+                        src_access: AccessFlags::SHADER_WRITE,
+                        dst_stages: PipelineStages::COMPUTE_SHADER,
+                        dst_access: AccessFlags::SHADER_READ | AccessFlags::SHADER_WRITE,
+                        ..Default::default()
+                    }]
+                    .as_ref()
+                    .into(),
+                    ..Default::default()
+                })
+                .unwrap();
+
+            // dispatch restir finalize
+            {
+                builder
+                    .bind_pipeline_compute(&self.restir_finalize_pipeline)
+                    .unwrap()
+                    .push_descriptor_set(
+                        PipelineBindPoint::Compute,
+                        &self.restir_finalize_pipeline.layout(),
+                        0,
+                        &[
+                            WriteDescriptorSet::buffer(0, self.ray_origins[fi].clone()),
+                            WriteDescriptorSet::buffer(1, self.ray_directions[fi].clone()),
+                            WriteDescriptorSet::buffer(2, self.bounce_emissivity[fi].clone()),
+                            WriteDescriptorSet::buffer(3, self.bounce_reflectivity[fi].clone()),
+                            WriteDescriptorSet::buffer(4, self.bounce_nee_mis_weight[fi].clone()),
+                            WriteDescriptorSet::buffer(5, self.bounce_bsdf_pdf[fi].clone()),
+                            WriteDescriptorSet::buffer(6, self.bounce_nee_pdf[fi].clone()),
+                            WriteDescriptorSet::buffer(
+                                7,
+                                self.restir_spatial_reservoir[fi].clone(),
+                            ),
+                            WriteDescriptorSet::buffer(8, self.restir_final_target[fi].clone()),
+                            WriteDescriptorSet::buffer(9, self.debug_info[fi].clone()),
+                        ],
+                    )
+                    .unwrap()
+                    .push_constants(
+                        &self.restir_finalize_pipeline.layout(),
+                        0,
+                        &restir_finalize::PushConstants {
+                            always_zero: 0,
+                            xsize: extent[0],
+                            ysize: extent[1],
                         },
                     )
                     .unwrap()
@@ -1486,19 +1701,14 @@ impl Renderer {
                         WriteDescriptorSet::buffer_with_range(
                             0,
                             DescriptorBufferInfo {
-                                buffer: self.bounce_outgoing_radiance
-                                    [self.frame_count % MIN_IMAGE_COUNT]
-                                    .as_bytes()
-                                    .clone(),
+                                buffer: self.bounce_outgoing_radiance[fi].as_bytes().clone(),
                                 range: 0 * sect_sz * 3..1 * sect_sz * 3,
                             },
                         ),
-                        WriteDescriptorSet::buffer(
-                            1,
-                            self.debug_info[self.frame_count % MIN_IMAGE_COUNT].clone(),
-                        ),
+                        WriteDescriptorSet::buffer(1, self.restir_final_target[fi].clone()),
+                        WriteDescriptorSet::buffer(2, self.debug_info[fi].clone()),
                         WriteDescriptorSet::image_view(
-                            2,
+                            3,
                             self.swapchain_image_views[image_index as usize].clone(),
                         ),
                     ],
@@ -1541,7 +1751,7 @@ impl Renderer {
                 .copy_image_to_buffer(&{
                     let mut x = CopyImageToBufferInfo::image_buffer(
                         self.swapchain_images[image_index as usize].clone(),
-                        self.host_output_buffers[self.frame_count % MIN_IMAGE_COUNT].clone(),
+                        self.host_output_buffers[fi].clone(),
                     );
                     x.src_image_layout = ImageLayout::General;
                     x
@@ -1590,9 +1800,7 @@ impl Renderer {
                 let command_buffer_handle = command_buffer.handle();
 
                 // set fence to unsignaled before submitting
-                self.frame_finished_rendering_fence[self.frame_count % MIN_IMAGE_COUNT]
-                    .reset()
-                    .unwrap();
+                self.frame_finished_rendering_fence[fi].reset().unwrap();
 
                 submit_fn(
                     self.queue.handle(),
@@ -1600,23 +1808,21 @@ impl Renderer {
                     &SubmitInfo::default()
                         // we wait for the swapchain image to be acquired before submitting the command buffer
                         // since the command buffer will write to the swapchain image
-                        .wait_semaphores(&[self.frame_swapchain_image_acquired_semaphore
-                            [self.frame_count % MIN_IMAGE_COUNT]
-                            .handle()])
+                        .wait_semaphores(&[
+                            self.frame_swapchain_image_acquired_semaphore[fi].handle()
+                        ])
                         // we wait for the swapchain image to be acquired before running the transfer command that will write to it.
                         // this makes it wait earlier than we want it to, but we don't have a more specific stage to wait for.
                         .wait_dst_stage_mask(&[PipelineStageFlags::TRANSFER])
                         .command_buffers(&[command_buffer_handle])
                         // we signal the semaphore when the command buffer is finished executing
                         // we can present the image as soon as that is done.
-                        .signal_semaphores(&[self.frame_finished_rendering_semaphore
-                            [self.frame_count % MIN_IMAGE_COUNT]
-                            .handle()]) as *const _,
+                        .signal_semaphores(&[self.frame_finished_rendering_semaphore[fi].handle()])
+                        as *const _,
                     // once it is finished processing, the fence will be signaled again
                     // the reason we need both a fence and the semaphore is because the swapchain present function only accepts a semaphore
                     // we need to be able to check the state of the fence on the next frame though, so we need to use both
-                    self.frame_finished_rendering_fence[self.frame_count % MIN_IMAGE_COUNT]
-                        .handle(),
+                    self.frame_finished_rendering_fence[fi].handle(),
                 )
                 .result()
                 .unwrap();
@@ -1625,9 +1831,7 @@ impl Renderer {
                 let present_result = present_fn(
                     self.queue.handle(),
                     &PresentInfoKHR::default()
-                        .wait_semaphores(&[self.frame_finished_rendering_semaphore
-                            [self.frame_count % MIN_IMAGE_COUNT]
-                            .handle()])
+                        .wait_semaphores(&[self.frame_finished_rendering_semaphore[fi].handle()])
                         .swapchains(&[self.swapchain.handle()])
                         .image_indices(&[image_index]) as *const _,
                 )
@@ -1712,28 +1916,30 @@ impl Renderer {
         right: Vector3<f32>,
         up: Vector3<f32>,
     ) {
+        let test_prefs = RenderingPreferences {
+            spp: 1,
+            debug_view: 1,
+            nee_type: 1,
+            restir_spatial_iterations: 5,
+            ..Default::default()
+        };
+
         let reference_prefs = RenderingPreferences {
             spp: 2048,
             ..Default::default()
         };
 
-        let test_prefs = RenderingPreferences {
-            spp: 2048,
-            nee_type: 1,
-            ..Default::default()
-        };
-
-        // Render the 128-spp reference image
-        unsafe {
-            self.render(scene, eye, front, right, up, reference_prefs);
-        }
-        let reference_img = self.screenshot();
-
-        // Render the 1-spp test image
+        // Render the restir test image first (so temporal reservoir warms up)
         unsafe {
             self.render(scene, eye, front, right, up, test_prefs);
         }
         let test_img = self.screenshot();
+
+        // Render the high-spp reference image
+        unsafe {
+            self.render(scene, eye, front, right, up, reference_prefs);
+        }
+        let reference_img = self.screenshot();
 
         // Build a delta image: per-pixel absolute difference, scaled to full range
         let width = reference_img.width();
