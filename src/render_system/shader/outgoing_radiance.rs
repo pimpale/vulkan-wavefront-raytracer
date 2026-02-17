@@ -40,12 +40,16 @@ layout(set = 0, binding = 6, scalar) readonly restrict buffer InputNeePdf {
     float input_nee_pdf[];
 };
 
-layout(set = 0, binding = 7, scalar) restrict buffer OutputOutgoingRadiance {
+layout(set = 0, binding = 7, scalar) writeonly restrict buffer OutputOutgoingRadiance {
     vec3 output_outgoing_radiance[];
 };
 
 layout(set = 0, binding = 8, scalar) writeonly restrict buffer OutputOmegaSamplingPdf {
     float output_omega_sampling_pdf[];
+};
+
+layout(set = 0, binding = 9, scalar) restrict buffer AccumulatedOutgoingRadiance {
+    vec3 accumulated_outgoing_radiance[];
 };
 
 layout(push_constant, scalar) uniform PushConstants {
@@ -69,6 +73,7 @@ void dummyUse() {
             + input_nee_pdf[0];
         output_outgoing_radiance[0] = vec3(d);
         output_omega_sampling_pdf[0] = d;
+        accumulated_outgoing_radiance[0] = vec3(d);
     }
 }
 
@@ -105,9 +110,14 @@ void main() {
 
         outgoing_radiance = input_emissivity[bid] + input_reflectivity[bid] * outgoing_radiance * reweighting_factor * ray_valid;
         
-        // write to global memory
-        output_outgoing_radiance[bid] += outgoing_radiance * factor;
+        // write raw per-sample value (for ReSTIR to read)
+        output_outgoing_radiance[bid] = outgoing_radiance;
         output_omega_sampling_pdf[bid] = q_omega;
+
+        // accumulate bounce 0 for vanilla PT display
+        if (bounce == 0) {
+            accumulated_outgoing_radiance[bid] += outgoing_radiance * factor;
+        }
     }
 }
 ",

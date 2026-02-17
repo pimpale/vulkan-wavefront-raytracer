@@ -23,9 +23,9 @@ struct Sample {
 };
 
 struct Reservoir {
-    Sample z;
-    float ucw;
-    uint m;
+    Sample Y;
+    float W_Y; // the unbiased contribution weight of Y
+    uint c; // confidence
     float w_sum;
 };
 
@@ -61,7 +61,7 @@ layout(set = 0, binding = 7, scalar) readonly restrict buffer SpatialReservoirBu
     Reservoir spatial_reservoirs[];
 };
 
-layout(set = 0, binding = 8, scalar) writeonly restrict buffer OutputOutgoingRadiance {
+layout(set = 0, binding = 8, scalar) restrict buffer OutputOutgoingRadiance {
     vec3 output_outgoing_radiance[];
 };
 
@@ -73,6 +73,7 @@ layout(push_constant, scalar) uniform PushConstants {
     uint always_zero;
     uint xsize;
     uint ysize;
+    uint spp;
 };
 
 
@@ -87,7 +88,9 @@ float dummyUse(uint always_zero) {
         + input_nee_mis_weight[0]
         + input_bsdf_pdf[0]
         + input_nee_pdf[0]
-        + spatial_reservoirs[0].ucw;
+        + spatial_reservoirs[0].W_Y
+        + output_outgoing_radiance[0].x
+        + debug_info[0].x;
 }
 
 void main() {
@@ -104,14 +107,19 @@ void main() {
 
     Reservoir sr = spatial_reservoirs[id];
 
-    vec3 dir = normalize(sr.z.x_s - input_origin[bid]);
-    vec3 normal = sr.z.n_v;
+    vec3 dir = normalize(sr.Y.x_s - input_origin[bid]);
+    vec3 normal = sr.Y.n_v;
 
+    // compute an unbiased estimate of the outgoing radiance at the sample point
+    vec3 outgoing_radiance_sample = sr.Y.l_o_hat * sr.W_Y;
+
+    // this is the distribution we are trying to compute the expectation over
     float bsdf_pdf = dot(dir, normal) / M_PI;
 
-    vec3 outgoing_radiance = input_emissivity[id] + input_reflectivity[id] * sr.z.l_o_hat * sr.ucw * bsdf_pdf;
-    output_outgoing_radiance[id] = outgoing_radiance;
-    debug_info[id] = vec3(sr.ucw/10);
+    float reweighting_factor = bsdf_pdf;
+
+    vec3 outgoing_radiance = input_emissivity[id] + input_reflectivity[id] * outgoing_radiance_sample * reweighting_factor;
+    output_outgoing_radiance[id] += outgoing_radiance / float(spp);
 }
 ",
 }

@@ -22,9 +22,9 @@ struct Sample {
 };
 
 struct Reservoir {
-    Sample z;
-    float ucw;
-    uint m;
+    Sample Y;
+    float W_Y; // the unbiased contribution weight of Y
+    uint c; // confidence
     float w_sum;
 };
 
@@ -44,7 +44,7 @@ layout(set = 0, binding = 3, scalar) readonly restrict buffer InputBounceOmegaSa
     float bounce_omega_sampling_pdf[];
 };
 
-layout(set = 0, binding = 4, scalar) restrict buffer TemporalReservoirBuffer {
+layout(set = 0, binding = 4, scalar) writeonly restrict buffer TemporalReservoirBuffer {
     Reservoir temporal_reservoirs[];
 };
 
@@ -101,11 +101,11 @@ float dummyUse() {
     if(always_zero == 0) {
         return 0;
     }
+    temporal_reservoirs[0].W_Y = 0;
     return ray_origins[0].x
          + bounce_normals[0].x
          + bounce_outgoing_radiance[0].x
          + bounce_omega_sampling_pdf[0]
-         + temporal_reservoirs[0].ucw
          + debug_info[0].x;
 }
 
@@ -122,24 +122,17 @@ Sample loadInitialSample(uint id) {
     );
 }
 
-Reservoir loadTemporalReservoir(uint id) {
-    return temporal_reservoirs[id];
-}
-
-void storeTemporalReservoir(uint id, Reservoir r) {
-    temporal_reservoirs[id] = r;
-}
-
 void updateReservoir(
-    uint seed,
+    float rand,
     inout Reservoir r,
-    Sample z,
-    float w_new
+    Sample x,
+    float w,
+    uint c
 ) {
-    r.w_sum += w_new;
-    r.m += 1;
-    if(floatConstruct(seed) < w_new / r.w_sum) {
-        r.z = z;
+    r.w_sum += w;
+    r.c += c;
+    if(rand < w / r.w_sum) {
+        r.Y = x;
     }
 }
 
@@ -147,8 +140,8 @@ float luminance(vec3 v) {
     return 0.2126 * v.r + 0.7152 * v.g + 0.0722 * v.b;
 }
 
-float p_hat_q(Sample S) {
-    return luminance(S.l_o_hat);
+float p_hat_q(Sample x) {
+    return luminance(x.l_o_hat);
 }
 
 void main() {
@@ -162,30 +155,27 @@ void main() {
     uint pixel_seed = murmur3_combine(invocation_seed, id);
 
     Sample S = loadInitialSample(id);
-    Reservoir R = loadTemporalReservoir(id);
-    // re-initialize the reservoir with probability 0.01
-    if(murmur3_finalizef(murmur3_combine(pixel_seed, 0)) < 0.01) {
-        R.w_sum = 0.0;
-        R.m = 0;
-    }
-    
+    Reservoir R = Reservoir(S, 0.0, 0, 0.0);
+
     const float p_q = S.p_omega;
     const float w = p_hat_q(S) / p_q;
 
     updateReservoir(
-        murmur3_finalize(murmur3_combine(pixel_seed, 1)),
+        murmur3_finalizef(murmur3_combine(pixel_seed, 1)),
         R,
         S,
-        w
+        w,
+        1u
     );
 
-    float p_hat_R_z = p_hat_q(R.z);
-    if(p_hat_R_z > 0) {
-       R.ucw = R.w_sum / (R.m * p_hat_R_z);
+    float p_hat_R_Y = p_hat_q(R.Y);
+    if(p_hat_R_Y > 0) {
+       R.W_Y = R.w_sum / (R.c * p_hat_R_Y);
     } else {
-        R.ucw = 0.0;
+        R.W_Y = 0.0;
     }
-    storeTemporalReservoir(id, R);
+    temporal_reservoirs[id] = R;
+    debug_info[id] += vec3(float(R.c)/10.0, 0, 0);
 }
 "
 }

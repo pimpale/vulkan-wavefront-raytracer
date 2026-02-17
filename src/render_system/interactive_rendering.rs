@@ -308,6 +308,7 @@ pub struct Renderer {
     restir_temporal_reservoir: Vec<Subbuffer<[RestirReservoirData]>>,
     restir_spatial_reservoir: Vec<Subbuffer<[RestirReservoirData]>>,
     restir_final_target: Vec<Subbuffer<[f32]>>,
+    accumulated_radiance: Vec<Subbuffer<[f32]>>,
     host_output_buffers: Vec<Subbuffer<[u8]>>,
     frame_swapchain_image_acquired_semaphore: Vec<Arc<sync::semaphore::Semaphore>>,
     frame_finished_rendering_semaphore: Vec<Arc<sync::semaphore::Semaphore>>,
@@ -790,6 +791,7 @@ impl Renderer {
             restir_temporal_reservoir: vec![],
             restir_spatial_reservoir: vec![],
             restir_final_target: vec![],
+            accumulated_radiance: vec![],
             sorter_storage: vec![],
             host_output_buffers: vec![],
             rng: rand::rng(),
@@ -947,15 +949,21 @@ impl Renderer {
             self.memory_allocator.clone(),
             &self.swapchain_images,
             WindowSizeSetupUsage::Transfer,
-            1,
+            size_of::<RestirReservoirData>().div_ceil(4) as u32,
         );
         self.restir_spatial_reservoir = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
             WindowSizeSetupUsage::Transfer,
-            1,
+            size_of::<RestirReservoirData>().div_ceil(4) as u32,
         );
         self.restir_final_target = window_size_dependent_setup(
+            self.memory_allocator.clone(),
+            &self.swapchain_images,
+            WindowSizeSetupUsage::Transfer,
+            3,
+        );
+        self.accumulated_radiance = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
             WindowSizeSetupUsage::Transfer,
@@ -1090,17 +1098,42 @@ impl Renderer {
             let ray_count = (extent[0] * extent[1]) as u64;
             let sect_sz = size_of::<f32>() as u64 * ray_count;
 
-            // blank the output buffer so that we can accumulate the samples
+            // zero the accumulation buffers before the SPP loop
             builder
                 .fill_buffer(
-                    &self.bounce_outgoing_radiance[fi]
-                        .clone()
-                        .reinterpret::<[u32]>(),
+                    &self.accumulated_radiance[fi].clone().reinterpret::<[u32]>(),
+                    0,
+                )
+                .unwrap();
+            builder
+                .fill_buffer(
+                    &self.restir_final_target[fi].clone().reinterpret::<[u32]>(),
                     0,
                 )
                 .unwrap();
 
             for sample_index in 0..rendering_preferences.spp {
+                // barrier: flush previous compute writes so they are visible to
+                // fill_buffer (transfer) and to subsequent compute reads (accumulated buffers)
+                builder
+                    .pipeline_barrier(&DependencyInfo {
+                        memory_barriers: [MemoryBarrier {
+                            src_stages: PipelineStages::COMPUTE_SHADER
+                                | PipelineStages::ALL_TRANSFER,
+                            src_access: AccessFlags::SHADER_WRITE | AccessFlags::TRANSFER_WRITE,
+                            dst_stages: PipelineStages::COMPUTE_SHADER
+                                | PipelineStages::ALL_TRANSFER,
+                            dst_access: AccessFlags::SHADER_READ
+                                | AccessFlags::SHADER_WRITE
+                                | AccessFlags::TRANSFER_WRITE,
+                            ..Default::default()
+                        }]
+                        .as_ref()
+                        .into(),
+                        ..Default::default()
+                    })
+                    .unwrap();
+
                 // blank the debug info and debug info 2 buffer
                 builder
                     .fill_buffer(&self.debug_info[fi].clone().reinterpret::<[u32]>(), 0)
@@ -1109,7 +1142,7 @@ impl Renderer {
                     .fill_buffer(&self.debug_info_2[fi].clone().reinterpret::<[u32]>(), 0)
                     .unwrap();
 
-                // insert pipeline barrier from transfer to compute
+                // barrier: make fill_buffer writes visible to compute
                 builder
                     .pipeline_barrier(&DependencyInfo {
                         memory_barriers: [MemoryBarrier {
@@ -1465,6 +1498,7 @@ impl Renderer {
                                 8,
                                 self.bounce_omega_sampling_pdf[fi].clone(),
                             ),
+                            WriteDescriptorSet::buffer(9, self.accumulated_radiance[fi].clone()),
                         ],
                     )
                     .unwrap()
@@ -1482,178 +1516,187 @@ impl Renderer {
                     .unwrap()
                     .dispatch(self.group_count_2d(&extent))
                     .unwrap();
-            }
 
-            // --- ReSTIR GI pipeline ---
+                // --- ReSTIR GI pipeline ---
 
-            // barrier: compute -> compute (source buffers written by previous shaders)
-            builder
-                .pipeline_barrier(&DependencyInfo {
-                    memory_barriers: [MemoryBarrier {
-                        src_stages: PipelineStages::COMPUTE_SHADER,
-                        src_access: AccessFlags::SHADER_WRITE,
-                        dst_stages: PipelineStages::COMPUTE_SHADER,
-                        dst_access: AccessFlags::SHADER_READ | AccessFlags::SHADER_WRITE,
-                        ..Default::default()
-                    }]
-                    .as_ref()
-                    .into(),
-                    ..Default::default()
-                })
-                .unwrap();
-
-            // dispatch restir temporal resampling
-            {
+                // barrier: compute -> compute (source buffers written by previous shaders)
                 builder
-                    .bind_pipeline_compute(&self.restir_temporal_resampling_pipeline)
-                    .unwrap()
-                    .push_descriptor_set(
-                        PipelineBindPoint::Compute,
-                        &self.restir_temporal_resampling_pipeline.layout(),
-                        0,
-                        &[
-                            WriteDescriptorSet::buffer(0, self.ray_origins[fi].clone()),
-                            WriteDescriptorSet::buffer(1, self.bounce_normals[fi].clone()),
-                            WriteDescriptorSet::buffer(
-                                2,
-                                self.bounce_outgoing_radiance[fi].clone(),
-                            ),
-                            WriteDescriptorSet::buffer(
-                                3,
-                                self.bounce_omega_sampling_pdf[fi].clone(),
-                            ),
-                            WriteDescriptorSet::buffer(
-                                4,
-                                self.restir_temporal_reservoir[fi].clone(),
-                            ),
-                            WriteDescriptorSet::buffer(5, self.debug_info[fi].clone()),
-                        ],
-                    )
-                    .unwrap()
-                    .push_constants(
-                        &self.restir_temporal_resampling_pipeline.layout(),
-                        0,
-                        &restir_temporal_resampling::PushConstants {
-                            always_zero: 0,
-                            invocation_seed: self.frame_count as u32 * 3,
-                            xsize: extent[0],
-                            ysize: extent[1],
-                        },
-                    )
-                    .unwrap()
-                    .dispatch(self.group_count_2d(&extent))
-                    .unwrap();
-            }
-
-            // barrier: compute -> compute
-            builder
-                .pipeline_barrier(&DependencyInfo {
-                    memory_barriers: [MemoryBarrier {
-                        src_stages: PipelineStages::COMPUTE_SHADER,
-                        src_access: AccessFlags::SHADER_WRITE,
-                        dst_stages: PipelineStages::COMPUTE_SHADER,
-                        dst_access: AccessFlags::SHADER_READ | AccessFlags::SHADER_WRITE,
+                    .pipeline_barrier(&DependencyInfo {
+                        memory_barriers: [MemoryBarrier {
+                            src_stages: PipelineStages::COMPUTE_SHADER,
+                            src_access: AccessFlags::SHADER_WRITE,
+                            dst_stages: PipelineStages::COMPUTE_SHADER,
+                            dst_access: AccessFlags::SHADER_READ | AccessFlags::SHADER_WRITE,
+                            ..Default::default()
+                        }]
+                        .as_ref()
+                        .into(),
                         ..Default::default()
-                    }]
-                    .as_ref()
-                    .into(),
-                    ..Default::default()
-                })
-                .unwrap();
-
-            // dispatch restir spatial resampling
-            {
-                builder
-                    .bind_pipeline_compute(&self.restir_spatial_resampling_pipeline)
-                    .unwrap()
-                    .push_descriptor_set(
-                        PipelineBindPoint::Compute,
-                        &self.restir_spatial_resampling_pipeline.layout(),
-                        0,
-                        &[
-                            WriteDescriptorSet::buffer(
-                                0,
-                                self.restir_temporal_reservoir[fi].clone(),
-                            ),
-                            WriteDescriptorSet::buffer(
-                                1,
-                                self.restir_spatial_reservoir[fi].clone(),
-                            ),
-                            WriteDescriptorSet::buffer(2, self.debug_info[fi].clone()),
-                        ],
-                    )
-                    .unwrap()
-                    .push_constants(
-                        &self.restir_spatial_resampling_pipeline.layout(),
-                        0,
-                        &restir_spatial_resampling::PushConstants {
-                            always_zero: 0,
-                            num_iterations: rendering_preferences.restir_spatial_iterations,
-                            invocation_seed: self.frame_count as u32 * 3 + 1,
-                            xsize: extent[0],
-                            ysize: extent[1],
-                        },
-                    )
-                    .unwrap()
-                    .dispatch(self.group_count_2d(&extent))
+                    })
                     .unwrap();
-            }
 
-            // barrier: compute -> compute
-            builder
-                .pipeline_barrier(&DependencyInfo {
-                    memory_barriers: [MemoryBarrier {
-                        src_stages: PipelineStages::COMPUTE_SHADER,
-                        src_access: AccessFlags::SHADER_WRITE,
-                        dst_stages: PipelineStages::COMPUTE_SHADER,
-                        dst_access: AccessFlags::SHADER_READ | AccessFlags::SHADER_WRITE,
+                // dispatch restir temporal resampling
+                {
+                    builder
+                        .bind_pipeline_compute(&self.restir_temporal_resampling_pipeline)
+                        .unwrap()
+                        .push_descriptor_set(
+                            PipelineBindPoint::Compute,
+                            &self.restir_temporal_resampling_pipeline.layout(),
+                            0,
+                            &[
+                                WriteDescriptorSet::buffer(0, self.ray_origins[fi].clone()),
+                                WriteDescriptorSet::buffer(1, self.bounce_normals[fi].clone()),
+                                WriteDescriptorSet::buffer(
+                                    2,
+                                    self.bounce_outgoing_radiance[fi].clone(),
+                                ),
+                                WriteDescriptorSet::buffer(
+                                    3,
+                                    self.bounce_omega_sampling_pdf[fi].clone(),
+                                ),
+                                WriteDescriptorSet::buffer(
+                                    4,
+                                    self.restir_temporal_reservoir[fi].clone(),
+                                ),
+                                WriteDescriptorSet::buffer(5, self.debug_info[fi].clone()),
+                            ],
+                        )
+                        .unwrap()
+                        .push_constants(
+                            &self.restir_temporal_resampling_pipeline.layout(),
+                            0,
+                            &restir_temporal_resampling::PushConstants {
+                                always_zero: 0,
+                                invocation_seed: self.frame_count as u32 * 3,
+                                xsize: extent[0],
+                                ysize: extent[1],
+                            },
+                        )
+                        .unwrap()
+                        .dispatch(self.group_count_2d(&extent))
+                        .unwrap();
+                }
+
+                // barrier: compute -> compute
+                builder
+                    .pipeline_barrier(&DependencyInfo {
+                        memory_barriers: [MemoryBarrier {
+                            src_stages: PipelineStages::COMPUTE_SHADER,
+                            src_access: AccessFlags::SHADER_WRITE,
+                            dst_stages: PipelineStages::COMPUTE_SHADER,
+                            dst_access: AccessFlags::SHADER_READ | AccessFlags::SHADER_WRITE,
+                            ..Default::default()
+                        }]
+                        .as_ref()
+                        .into(),
                         ..Default::default()
-                    }]
-                    .as_ref()
-                    .into(),
-                    ..Default::default()
-                })
-                .unwrap();
-
-            // dispatch restir finalize
-            {
-                builder
-                    .bind_pipeline_compute(&self.restir_finalize_pipeline)
-                    .unwrap()
-                    .push_descriptor_set(
-                        PipelineBindPoint::Compute,
-                        &self.restir_finalize_pipeline.layout(),
-                        0,
-                        &[
-                            WriteDescriptorSet::buffer(0, self.ray_origins[fi].clone()),
-                            WriteDescriptorSet::buffer(1, self.ray_directions[fi].clone()),
-                            WriteDescriptorSet::buffer(2, self.bounce_emissivity[fi].clone()),
-                            WriteDescriptorSet::buffer(3, self.bounce_reflectivity[fi].clone()),
-                            WriteDescriptorSet::buffer(4, self.bounce_nee_mis_weight[fi].clone()),
-                            WriteDescriptorSet::buffer(5, self.bounce_bsdf_pdf[fi].clone()),
-                            WriteDescriptorSet::buffer(6, self.bounce_nee_pdf[fi].clone()),
-                            WriteDescriptorSet::buffer(
-                                7,
-                                self.restir_spatial_reservoir[fi].clone(),
-                            ),
-                            WriteDescriptorSet::buffer(8, self.restir_final_target[fi].clone()),
-                            WriteDescriptorSet::buffer(9, self.debug_info[fi].clone()),
-                        ],
-                    )
-                    .unwrap()
-                    .push_constants(
-                        &self.restir_finalize_pipeline.layout(),
-                        0,
-                        &restir_finalize::PushConstants {
-                            always_zero: 0,
-                            xsize: extent[0],
-                            ysize: extent[1],
-                        },
-                    )
-                    .unwrap()
-                    .dispatch(self.group_count_2d(&extent))
+                    })
                     .unwrap();
-            }
+
+                // dispatch restir spatial resampling
+                {
+                    builder
+                        .bind_pipeline_compute(&self.restir_spatial_resampling_pipeline)
+                        .unwrap()
+                        .push_descriptor_set(
+                            PipelineBindPoint::Compute,
+                            &self.restir_spatial_resampling_pipeline.layout(),
+                            0,
+                            &[
+                                WriteDescriptorSet::buffer(
+                                    0,
+                                    self.restir_temporal_reservoir[fi].clone(),
+                                ),
+                                WriteDescriptorSet::buffer(
+                                    1,
+                                    self.restir_spatial_reservoir[fi].clone(),
+                                ),
+                                WriteDescriptorSet::buffer(2, self.debug_info[fi].clone()),
+                                WriteDescriptorSet::acceleration_structure(
+                                    3,
+                                    top_level_acceleration_structure.clone(),
+                                ),
+                            ],
+                        )
+                        .unwrap()
+                        .push_constants(
+                            &self.restir_spatial_resampling_pipeline.layout(),
+                            0,
+                            &restir_spatial_resampling::PushConstants {
+                                always_zero: 0,
+                                num_iterations: rendering_preferences.restir_spatial_iterations,
+                                invocation_seed: self.frame_count as u32 * 3 + 1,
+                                xsize: extent[0],
+                                ysize: extent[1],
+                                cam_pos: eye.coords,
+                            },
+                        )
+                        .unwrap()
+                        .dispatch(self.group_count_2d(&extent))
+                        .unwrap();
+                }
+
+                // barrier: compute -> compute
+                builder
+                    .pipeline_barrier(&DependencyInfo {
+                        memory_barriers: [MemoryBarrier {
+                            src_stages: PipelineStages::COMPUTE_SHADER,
+                            src_access: AccessFlags::SHADER_WRITE,
+                            dst_stages: PipelineStages::COMPUTE_SHADER,
+                            dst_access: AccessFlags::SHADER_READ | AccessFlags::SHADER_WRITE,
+                            ..Default::default()
+                        }]
+                        .as_ref()
+                        .into(),
+                        ..Default::default()
+                    })
+                    .unwrap();
+
+                // dispatch restir finalize
+                {
+                    builder
+                        .bind_pipeline_compute(&self.restir_finalize_pipeline)
+                        .unwrap()
+                        .push_descriptor_set(
+                            PipelineBindPoint::Compute,
+                            &self.restir_finalize_pipeline.layout(),
+                            0,
+                            &[
+                                WriteDescriptorSet::buffer(0, self.ray_origins[fi].clone()),
+                                WriteDescriptorSet::buffer(1, self.ray_directions[fi].clone()),
+                                WriteDescriptorSet::buffer(2, self.bounce_emissivity[fi].clone()),
+                                WriteDescriptorSet::buffer(3, self.bounce_reflectivity[fi].clone()),
+                                WriteDescriptorSet::buffer(
+                                    4,
+                                    self.bounce_nee_mis_weight[fi].clone(),
+                                ),
+                                WriteDescriptorSet::buffer(5, self.bounce_bsdf_pdf[fi].clone()),
+                                WriteDescriptorSet::buffer(6, self.bounce_nee_pdf[fi].clone()),
+                                WriteDescriptorSet::buffer(
+                                    7,
+                                    self.restir_spatial_reservoir[fi].clone(),
+                                ),
+                                WriteDescriptorSet::buffer(8, self.restir_final_target[fi].clone()),
+                                WriteDescriptorSet::buffer(9, self.debug_info[fi].clone()),
+                            ],
+                        )
+                        .unwrap()
+                        .push_constants(
+                            &self.restir_finalize_pipeline.layout(),
+                            0,
+                            &restir_finalize::PushConstants {
+                                always_zero: 0,
+                                xsize: extent[0],
+                                ysize: extent[1],
+                                spp: rendering_preferences.spp,
+                            },
+                        )
+                        .unwrap()
+                        .dispatch(self.group_count_2d(&extent))
+                        .unwrap();
+                }
+            } // end of SPP loop
 
             // aggregate the samples and write to output buffer
             builder
@@ -1698,13 +1741,7 @@ impl Renderer {
                     &self.postprocess_pipeline.layout(),
                     0,
                     &[
-                        WriteDescriptorSet::buffer_with_range(
-                            0,
-                            DescriptorBufferInfo {
-                                buffer: self.bounce_outgoing_radiance[fi].as_bytes().clone(),
-                                range: 0 * sect_sz * 3..1 * sect_sz * 3,
-                            },
-                        ),
+                        WriteDescriptorSet::buffer(0, self.accumulated_radiance[fi].clone()),
                         WriteDescriptorSet::buffer(1, self.restir_final_target[fi].clone()),
                         WriteDescriptorSet::buffer(2, self.debug_info[fi].clone()),
                         WriteDescriptorSet::image_view(
@@ -1905,7 +1942,7 @@ impl Renderer {
             .expect("Failed to create image from raw buffer")
     }
 
-    /// Renders the scene at 128 spp (reference) and 1 spp (test), produces
+    /// Renders the scene at 2048 spp (reference) and with restir spatial resampling (test), produces
     /// a delta image highlighting where the two differ most, computes the MAPE,
     /// and saves everything to the `screenshots/` directory.
     pub unsafe fn benchmark(
@@ -1917,10 +1954,9 @@ impl Renderer {
         up: Vector3<f32>,
     ) {
         let test_prefs = RenderingPreferences {
-            spp: 1,
+            spp: 1024,
             debug_view: 1,
-            nee_type: 1,
-            restir_spatial_iterations: 5,
+            restir_spatial_iterations: 10,
             ..Default::default()
         };
 
@@ -2005,6 +2041,12 @@ impl Renderer {
         delta_img
             .save(screenshots_dir.join(format!("{}_delta.png", next_idx)))
             .expect("Failed to save delta image");
+        let delta_gray = image::DynamicImage::ImageRgba8(delta_img)
+            .grayscale()
+            .to_rgba8();
+        delta_gray
+            .save(screenshots_dir.join(format!("{}_delta_gray.png", next_idx)))
+            .expect("Failed to save grayscale delta image");
 
         // Save MAPE as JSON
         let mape_json = format!("{{\n  \"mape\": {:.4}\n}}\n", mape);
