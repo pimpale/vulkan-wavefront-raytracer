@@ -41,8 +41,8 @@ layout(set = 0, binding = 2, scalar) readonly restrict buffer InputEmissivity {
     vec3 input_emissivity[];
 };
 
-layout(set = 0, binding = 3, scalar) readonly restrict buffer InputReflectivity {
-    vec3 input_reflectivity[];
+layout(set = 0, binding = 3, scalar) readonly restrict buffer InputAlbedo {
+    vec3 input_albedo[];
 };
 
 layout(set = 0, binding = 4, scalar) readonly restrict buffer InputNeeMisWeight {
@@ -69,6 +69,10 @@ layout(set = 0, binding = 9, scalar) restrict buffer DebugInfo {
     vec3 debug_info[];
 };
 
+layout(set = 0, binding = 10, scalar) readonly restrict buffer InputNormal {
+    vec3 input_normal[];
+};
+
 layout(push_constant, scalar) uniform PushConstants {
     uint always_zero;
     uint xsize;
@@ -84,13 +88,14 @@ float dummyUse(uint always_zero) {
     return input_origin[0].x
         + input_direction[0].x
         + input_emissivity[0].x
-        + input_reflectivity[0].x
+        + input_albedo[0].x
         + input_nee_mis_weight[0]
         + input_bsdf_pdf[0]
         + input_nee_pdf[0]
         + spatial_reservoirs[0].W_Y
         + output_outgoing_radiance[0].x
-        + debug_info[0].x;
+        + debug_info[0].x
+        + input_normal[0].x;
 }
 
 void main() {
@@ -108,18 +113,18 @@ void main() {
     Reservoir sr = spatial_reservoirs[id];
 
     vec3 dir = normalize(sr.Y.x_s - input_origin[bid]);
-    vec3 normal = sr.Y.n_v;
+    vec3 normal = input_normal[id];
+    vec3 A = input_albedo[id];
+    vec3 L_e = input_emissivity[id];
 
-    // compute an unbiased estimate of the outgoing radiance at the sample point
-    vec3 outgoing_radiance_sample = sr.Y.l_o_hat * sr.W_Y;
+    float bsdf_pdf = max(0.0, dot(dir, normal)) / M_PI;
 
-    // this is the distribution we are trying to compute the expectation over
-    float bsdf_pdf = dot(dir, normal) / M_PI;
-
-    float reweighting_factor = bsdf_pdf;
-
-    vec3 outgoing_radiance = input_emissivity[id] + input_reflectivity[id] * outgoing_radiance_sample * reweighting_factor;
-    output_outgoing_radiance[id] += outgoing_radiance / float(spp);
+    // The reservoir's contribution weight W_Y absorbs the 1/sampling_pdf
+    // factor that appears explicitly in the vanilla path tracer.
+    // Compare: outgoing_radiance.rs computes  L_e + A * bsdf_pdf / sampling_pdf * L_i
+    //          here W_Y replaces 1/sampling_pdf:  L_e + A * bsdf_pdf * (l_o_hat * W_Y)
+    vec3 L_o = L_e + A * bsdf_pdf * sr.Y.l_o_hat * sr.W_Y;
+    output_outgoing_radiance[id] += L_o / float(spp);
 }
 ",
 }

@@ -44,7 +44,7 @@ layout(set = 0, binding = 3, scalar) readonly restrict buffer InputBounceOmegaSa
     float bounce_omega_sampling_pdf[];
 };
 
-layout(set = 0, binding = 4, scalar) writeonly restrict buffer TemporalReservoirBuffer {
+layout(set = 0, binding = 4, scalar) restrict buffer TemporalReservoirBuffer {
     Reservoir temporal_reservoirs[];
 };
 
@@ -156,6 +156,7 @@ void main() {
 
     Sample S = loadInitialSample(id);
     Reservoir R = Reservoir(S, 0.0, 0, 0.0);
+    // Reservoir R = temporal_reservoirs[id];
 
     const float p_q = S.p_omega;
     const float w = p_hat_q(S) / p_q;

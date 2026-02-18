@@ -82,8 +82,8 @@ layout(set = 1, binding = 8, scalar) writeonly restrict buffer OutputsEmissivity
     vec3 output_emissivity[];
 };
 
-layout(set = 1, binding = 9, scalar) writeonly restrict buffer OutputsReflectivity {
-    vec3 output_reflectivity[];
+layout(set = 1, binding = 9, scalar) writeonly restrict buffer OutputsAlbedo {
+    vec3 output_albedo[];
 };
 
 layout(set = 1, binding = 10, scalar) writeonly restrict buffer OutputsNeeMisWeight {
@@ -123,7 +123,7 @@ void dummyUse() {
         output_direction[0] = vec3(d);
         output_normal[0] = vec3(d);
         output_emissivity[0] = vec3(d);
-        output_reflectivity[0] = vec3(d);
+        output_albedo[0] = vec3(d);
         output_nee_mis_weight[0] = d;
         output_bsdf_pdf[0] = d;
         output_sort_key[0] = uint(d);
@@ -502,7 +502,7 @@ void main() {
         output_direction[bid] = vec3(0.0);
         output_normal[bid] = vec3(0.0);
         output_emissivity[bid] = vec3(0.0);
-        output_reflectivity[bid] = vec3(0.0);
+        output_albedo[bid] = vec3(0.0);
         output_nee_mis_weight[bid] = 0.0;
         output_bsdf_pdf[bid] = 1.0;
         output_sort_key[bid] = 0;
@@ -516,8 +516,8 @@ void main() {
         output_origin[bid] = origin + direction * 5000.0;
         output_direction[bid] = vec3(0.0); // no direction (miss)
         output_normal[bid] = vec3(0.0);
-        output_emissivity[bid] = vec3(dot(direction, vec3(0, 1, 0)) > 0.9 ? 50.0 : 0); // sky color
-        output_reflectivity[bid] = vec3(0.0);
+        output_emissivity[bid] = vec3(dot(direction, vec3(0, 1, 0)) > 0.9 ? 1.0 : 0); // sky color
+        output_albedo[bid] = vec3(0.0);
         output_nee_mis_weight[bid] = 0.0;
         output_bsdf_pdf[bid] = 1.0;
         output_sort_key[bid] = 0;
@@ -567,10 +567,10 @@ void main() {
     // probability of choosing the ray given the BSDF
     float bsdf_pdf;
 
-    vec3 reflectivity = tex0.rgb;
-    float alpha = tex0.a;
-    vec3 emissivity = 1000.0*tex1.rgb * -dot(direction, ics.normal);
-    float metallicity = tex2.r;
+    vec3 albedo = tex0.rgb;
+    const float alpha = tex0.a;
+    const vec3 emissivity = 300.0*tex1.rgb * -dot(direction, ics.normal);
+    const float metallicity = tex2.r;
 
     // decide whether to do specular (0), transmissive (1), or lambertian (2) scattering
     float scatter_kind_rand = murmur3_finalizef(murmur3_combine(seed, 0));
@@ -585,15 +585,11 @@ void main() {
     } else if (scatter_kind_rand < metallicity + (1.0-alpha)) {
         // transmissive scattering
         new_direction = direction;
-        reflectivity = vec3(1.0);
+        albedo = vec3(1.0);
         bsdf_pdf = 1.0;
     } else {
         // offset origin slightly to avoid self intersection
         new_origin += EPSILON_BLOCK * ics.normal;
-
-
-        // lambertian scattering
-        reflectivity = reflectivity / M_PI;
 
         // try traversing the bvh
         BvhTraverseResult result;
@@ -645,9 +641,12 @@ void main() {
             // uniform sample the hemisphere (as this is better for spatial resampling)
             new_direction = alignedCosineSampleHemisphere(
                 // random uv
+                // important: murmur3 tends to produce real 0s at a non-neglible rate (but not 1s),
+                // so we invert to avoid this.
+                // otherwise, it will produce a sample with 0 bsdf_pdf, resulting in a NAN later on.
                 vec2(
                     murmur3_finalizef(murmur3_combine(seed, 4)),
-                    murmur3_finalizef(murmur3_combine(seed, 5))
+                    1.0-murmur3_finalizef(murmur3_combine(seed, 5))
                 ),
                 // align it with the normal of the object we hit
                 ics
@@ -666,7 +665,7 @@ void main() {
     output_direction[bid] = new_direction;
     output_normal[bid] = ics.normal;
     output_emissivity[bid] = emissivity;
-    output_reflectivity[bid] = reflectivity;
+    output_albedo[bid] = albedo;
     output_nee_mis_weight[bid] = light_pdf_mis_weight;
     output_bsdf_pdf[bid] = bsdf_pdf;
     output_sort_key[bid] = bid;

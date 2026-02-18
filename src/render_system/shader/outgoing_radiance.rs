@@ -24,8 +24,8 @@ layout(set = 0, binding = 2, scalar) readonly restrict buffer InputEmissivity {
     vec3 input_emissivity[];
 };
 
-layout(set = 0, binding = 3, scalar) readonly restrict buffer InputReflectivity {
-    vec3 input_reflectivity[];
+layout(set = 0, binding = 3, scalar) readonly restrict buffer InputAlbedo {
+    vec3 input_albedo[];
 };
 
 layout(set = 0, binding = 4, scalar) readonly restrict buffer InputNeeMisWeight {
@@ -67,7 +67,7 @@ void dummyUse() {
         float d = input_origin[0].x
             + input_direction[0].x
             + input_emissivity[0].x
-            + input_reflectivity[0].x
+            + input_albedo[0].x
             + input_nee_mis_weight[0]
             + input_bsdf_pdf[0]
             + input_nee_pdf[0];
@@ -86,8 +86,8 @@ void main() {
     const uint y = gl_GlobalInvocationID.y;
     const float factor = 1.0 / float(spp);
 
-    // compute the color for this sample
-    vec3 outgoing_radiance = vec3(0.0);
+    // compute the outgoing radiance (L_o)
+    vec3 L_o = vec3(0.0);
     for(int bounce = int(num_bounces)-1; bounce >= 0; bounce--) {            
         // tensor layout: [bounce, y, x, channel]
         const uint bid = bounce * ysize * xsize 
@@ -97,26 +97,29 @@ void main() {
         // whether the ray is valid
         float ray_valid = float(input_direction[bid] != vec3(0.0));
 
-        // compute importance sampling data
-        float bsdf_pdf = input_bsdf_pdf[bid];
-        float nee_pdf = input_nee_pdf[bid];
-        float nee_mis_weight = input_nee_mis_weight[bid];
-        // this is our sampling distribution: 
-        // mis_weight proportion of the time, we sample from the light source, and 1-mis_weight proportion of the time, we sample from the bsdf pdf
-        float q_omega = nee_pdf * nee_mis_weight + (1.0 - nee_mis_weight) * bsdf_pdf;
-        // this is the distribution we are trying to compute the expectation over
-        float p_omega = bsdf_pdf;
-        float reweighting_factor = p_omega / (q_omega + EPSILON);
+        // incoming radiance (L_i) = last bounce's outgoing radiance
+        // we zero it out if the ray is invalid
+        const vec3 L_i = L_o * ray_valid;
 
-        outgoing_radiance = input_emissivity[bid] + input_reflectivity[bid] * outgoing_radiance * reweighting_factor * ray_valid;
+        const float bsdf_pdf = input_bsdf_pdf[bid];
+        const float nee_pdf = input_nee_pdf[bid];
+        const float nee_mis_weight = input_nee_mis_weight[bid];
+        const vec3 A = input_albedo[bid];
+        const vec3 L_e = input_emissivity[bid];
+
+        // compute the sampling pdf: this is how we are sampling rays
+        // mis_weight proportion of the time, we sample from the light source, and 1-mis_weight proportion of the time, we sample from the bsdf pdf
+        float sampling_pdf = nee_pdf * nee_mis_weight + (1.0 - nee_mis_weight) * bsdf_pdf;
+
+        L_o = L_e + A * bsdf_pdf * L_i / sampling_pdf;
         
         // write raw per-sample value (for ReSTIR to read)
-        output_outgoing_radiance[bid] = outgoing_radiance;
-        output_omega_sampling_pdf[bid] = q_omega;
+        output_outgoing_radiance[bid] = L_o;
+        output_omega_sampling_pdf[bid] = sampling_pdf;
 
         // accumulate bounce 0 for vanilla PT display
         if (bounce == 0) {
-            accumulated_outgoing_radiance[bid] += outgoing_radiance * factor;
+            accumulated_outgoing_radiance[bid] += L_o * factor;
         }
     }
 }

@@ -350,9 +350,9 @@ void main() {
         }
     }
 
-    // if nan, set to EPSILON
+    // if nan, set to 0
     if(nee_pdf != nee_pdf) {
-        nee_pdf = EPSILON;
+        nee_pdf = 0;
     }
 
     output_nee_pdf[bid] = nee_pdf;

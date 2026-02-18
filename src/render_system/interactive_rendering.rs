@@ -289,7 +289,7 @@ pub struct Renderer {
     bounce_indices: Vec<Subbuffer<[u32]>>,
     bounce_normals: Vec<Subbuffer<[f32]>>,
     bounce_emissivity: Vec<Subbuffer<[f32]>>,
-    bounce_reflectivity: Vec<Subbuffer<[f32]>>,
+    bounce_albedo: Vec<Subbuffer<[f32]>>,
     // balance heuristic weight to give to nee
     bounce_nee_mis_weight: Vec<Subbuffer<[f32]>>,
     // the pdf of the selected ray direction only considering the bsdf
@@ -407,8 +407,8 @@ impl Renderer {
     ) -> Renderer {
         let texture_atlas = texture_atlas
             .into_iter()
-            .flat_map(|(reflectivity, emissivity, metallicity)| {
-                [reflectivity, emissivity, metallicity]
+            .flat_map(|(albedo, emissivity, metallicity)| {
+                [albedo, emissivity, metallicity]
             })
             .collect::<Vec<_>>();
 
@@ -749,7 +749,7 @@ impl Renderer {
         let sorter = Sorter::new(device.clone());
 
         let mut renderer = Renderer {
-            num_bounces: 2,
+            num_bounces: 3,
             surface,
             command_buffer_allocator,
             device,
@@ -779,7 +779,7 @@ impl Renderer {
             bounce_indices: vec![],
             bounce_normals: vec![],
             bounce_emissivity: vec![],
-            bounce_reflectivity: vec![],
+            bounce_albedo: vec![],
             bounce_nee_mis_weight: vec![],
             bounce_bsdf_pdf: vec![],
             bounce_nee_pdf: vec![],
@@ -874,8 +874,8 @@ impl Renderer {
             3 * self.num_bounces,
         );
 
-        // reflectivity
-        self.bounce_reflectivity = window_size_dependent_setup(
+        // albedo
+        self.bounce_albedo = window_size_dependent_setup(
             self.memory_allocator.clone(),
             &self.swapchain_images,
             WindowSizeSetupUsage::Default,
@@ -1312,7 +1312,7 @@ impl Renderer {
                                 WriteDescriptorSet::buffer_with_range(
                                     9,
                                     DescriptorBufferInfo {
-                                        buffer: self.bounce_reflectivity[fi].as_bytes().clone(),
+                                        buffer: self.bounce_albedo[fi].as_bytes().clone(),
                                         range: b * 3 * sect_sz..(b + 1) * 3 * sect_sz,
                                     },
                                 ),
@@ -1486,7 +1486,7 @@ impl Renderer {
                             WriteDescriptorSet::buffer(0, self.ray_origins[fi].clone()),
                             WriteDescriptorSet::buffer(1, self.ray_directions[fi].clone()),
                             WriteDescriptorSet::buffer(2, self.bounce_emissivity[fi].clone()),
-                            WriteDescriptorSet::buffer(3, self.bounce_reflectivity[fi].clone()),
+                            WriteDescriptorSet::buffer(3, self.bounce_albedo[fi].clone()),
                             WriteDescriptorSet::buffer(4, self.bounce_nee_mis_weight[fi].clone()),
                             WriteDescriptorSet::buffer(5, self.bounce_bsdf_pdf[fi].clone()),
                             WriteDescriptorSet::buffer(6, self.bounce_nee_pdf[fi].clone()),
@@ -1666,7 +1666,7 @@ impl Renderer {
                                 WriteDescriptorSet::buffer(0, self.ray_origins[fi].clone()),
                                 WriteDescriptorSet::buffer(1, self.ray_directions[fi].clone()),
                                 WriteDescriptorSet::buffer(2, self.bounce_emissivity[fi].clone()),
-                                WriteDescriptorSet::buffer(3, self.bounce_reflectivity[fi].clone()),
+                                WriteDescriptorSet::buffer(3, self.bounce_albedo[fi].clone()),
                                 WriteDescriptorSet::buffer(
                                     4,
                                     self.bounce_nee_mis_weight[fi].clone(),
@@ -1679,6 +1679,10 @@ impl Renderer {
                                 ),
                                 WriteDescriptorSet::buffer(8, self.restir_final_target[fi].clone()),
                                 WriteDescriptorSet::buffer(9, self.debug_info[fi].clone()),
+                                WriteDescriptorSet::buffer(
+                                    10,
+                                    self.bounce_normals[fi].clone(),
+                                ),
                             ],
                         )
                         .unwrap()
@@ -1956,12 +1960,15 @@ impl Renderer {
         let test_prefs = RenderingPreferences {
             spp: 1024,
             debug_view: 1,
+            nee_type: 1,
             restir_spatial_iterations: 10,
             ..Default::default()
         };
 
         let reference_prefs = RenderingPreferences {
-            spp: 2048,
+            spp: 1024,
+            debug_view: 1,
+            restir_spatial_iterations: 10,
             ..Default::default()
         };
 

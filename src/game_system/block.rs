@@ -31,8 +31,8 @@ impl Display for BlockFace {
 
 #[derive(Deserialize)]
 pub struct TextureDefinition {
-    // texture for how much light is reflected at each point
-    reflectivity: String,
+    // texture for the albedo of the surface at each point
+    albedo: String,
     // texture for how much light is emitted at each point
     emissivity: String,
     // texture for the chance that the the light will be reflected specularly at each point
@@ -83,13 +83,13 @@ impl BlockDefinitionTable {
 
         for (idx, (name, block)) in blocks_json.blocks.into_iter().enumerate() {
             let mut load_texture = |tex: &TextureDefinition| {
-                let reflectivity_path = format!("{}/{}", assets_path, tex.reflectivity);
-                let reflectivity = image::open(reflectivity_path).unwrap().to_rgba8();
+                let albedo_path = format!("{}/{}", assets_path, tex.albedo);
+                let albedo = image::open(albedo_path).unwrap().to_rgba8();
                 let emissivity_path = format!("{}/{}", assets_path, tex.emissivity);
                 let emissivity = image::open(emissivity_path).unwrap().to_rgba8();
                 let metallicity_path = format!("{}/{}", assets_path, tex.metallicity);
                 let metallicity = image::open(metallicity_path).unwrap().to_rgba8();
-                current_texture_atlas.push((reflectivity, emissivity, metallicity));
+                current_texture_atlas.push((albedo, emissivity, metallicity));
             };
 
             load_texture(&block.left);

@@ -10,6 +10,7 @@ vulkano_shaders::shader! {
 #extension GL_EXT_ray_query: require
 
 #define EPSILON_BLOCK 0.001
+#define EPSILON 0.0001
 
 layout(local_size_x = 32, local_size_y = 32, local_size_z = 1) in;
 
@@ -195,7 +196,7 @@ float computeJacobianQToR(Sample q, Sample r) {
     return (cos_phi_r_2 / cos_phi_q_2) * ((length_q_v_to_s*length_q_v_to_s) / (length_r_v_to_s*length_r_v_to_s));
 }
 
-const uint maxIterations = 20;
+const uint maxIterations = 10;
 const float spatialSearchRadius = 20;
 
 void main() {
@@ -241,8 +242,9 @@ void main() {
         }
 
         float jacobian = computeJacobianQToR(R_n.Y, S);
+        jacobian = clamp(jacobian, EPSILON, 1/EPSILON);
 
-        float p_hat_q_adj = p_hat_q(R_n.Y) / jacobian;
+        float p_hat_q_adj = p_hat_q(R_n.Y) * jacobian;
 
         // if R_n's sample point is not visible from q's visible point, zero out p_hat
         if(!isVisible(S.x_v, R_n.Y.x_s)) {
@@ -261,8 +263,8 @@ void main() {
         nQ++;
     }
 
-    // Bias correction (Algorithm 4, lines 16-19)
-    // Z counts the total confidence of neighbors that could have produced R_s.Y
+    // Bias correction
+    // See https://dl.acm.org/doi/epdf/10.1145/3386569.3392481 (Algorithm 6) for justification
     uint Z = 0;
     for(uint i = 0; i < nQ; i++) {
         Reservoir R_n = Q_reservoirs[i];
@@ -277,8 +279,6 @@ void main() {
         R_s.W_Y = R_s.w_sum / (Z * p_hat_q(R_s.Y));
     }
     spatial_reservoirs[id] = R_s;
-    debug_info[id] += vec3(0, float(R_s.c)/10.0, 0);
-
 }
 ",
 }
