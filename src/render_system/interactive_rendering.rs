@@ -1958,17 +1958,14 @@ impl Renderer {
         up: Vector3<f32>,
     ) {
         let test_prefs = RenderingPreferences {
-            spp: 1024,
+            spp: 512,
             debug_view: 1,
-            nee_type: 1,
             restir_spatial_iterations: 10,
             ..Default::default()
         };
 
         let reference_prefs = RenderingPreferences {
-            spp: 1024,
-            debug_view: 1,
-            restir_spatial_iterations: 10,
+            spp: 2048,
             ..Default::default()
         };
 
